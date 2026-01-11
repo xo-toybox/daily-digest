@@ -31,6 +31,14 @@ from .datasets import (
     export_dataset_to_jsonl,
     import_dataset_from_jsonl,
 )
+from .seed_collector import (
+    validate_url,
+    score_seed_quality,
+    list_categories,
+    get_category_info,
+    export_seeds_to_jsonl,
+    TOPIC_CATEGORIES,
+)
 
 __all__ = [
     # Expansion evaluators
@@ -59,4 +67,11 @@ __all__ = [
     "find_runs_by_quality",
     "export_dataset_to_jsonl",
     "import_dataset_from_jsonl",
+    # Seed collection
+    "validate_url",
+    "score_seed_quality",
+    "list_categories",
+    "get_category_info",
+    "export_seeds_to_jsonl",
+    "TOPIC_CATEGORIES",
 ]

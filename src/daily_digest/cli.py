@@ -20,6 +20,7 @@ from .archive import (
 from .digest import create_digest, generate_digest_markdown
 from .eval.runner import run_expansion_eval, format_eval_results
 from .eval.datasets import list_datasets, export_dataset_to_jsonl, import_dataset_from_jsonl
+from .eval.seed_collector import list_categories, get_category_info, validate_url
 from .models import Expansion, InboxItem, ItemType
 from .tracing import export_recent_traces, print_tracing_status
 
@@ -394,6 +395,40 @@ async def cmd_dataset(args: argparse.Namespace) -> None:
             console.print("[red]Import failed. Check dataset exists and API key.[/red]")
 
 
+async def cmd_seeds(args: argparse.Namespace) -> None:
+    """Manage seed input collection for eval datasets."""
+    if args.action == "categories":
+        # List topic categories
+        layer = args.layer
+        categories = list_categories(layer)
+
+        if layer:
+            console.print(f"[bold]Categories ({layer} layer):[/bold]\n")
+        else:
+            console.print("[bold]All topic categories:[/bold]\n")
+
+        for cat in sorted(categories):
+            info = get_category_info(cat)
+            if info:
+                console.print(f"  [cyan]{cat}[/cyan] ({info.get('layer', 'unknown')})")
+                console.print(f"    [dim]{info.get('description', '')}[/dim]")
+
+    elif args.action == "validate":
+        # Validate a single URL
+        if not args.url:
+            console.print("[red]--url required for validate[/red]")
+            return
+
+        console.print(f"[bold]Validating:[/bold] {args.url}\n")
+        result = await validate_url(args.url)
+
+        if result["valid"]:
+            console.print(f"[green]Valid[/green]")
+            console.print(f"  normalized: {result['normalized_url']}")
+        else:
+            console.print(f"[red]Invalid[/red]: {result['reason']}")
+
+
 def main() -> None:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(
@@ -438,6 +473,12 @@ def main() -> None:
     dataset_parser.add_argument("--file", help="JSONL file for import")
     dataset_parser.add_argument("--output", help="Output path for export")
 
+    # seeds command
+    seeds_parser = subparsers.add_parser("seeds", help="Manage seed input collection")
+    seeds_parser.add_argument("action", choices=["categories", "validate"], help="Action to perform")
+    seeds_parser.add_argument("--layer", choices=["engineering", "product", "research"], help="Filter by layer")
+    seeds_parser.add_argument("--url", help="URL to validate")
+
     args = parser.parse_args()
 
     # Run async command
@@ -457,6 +498,8 @@ def main() -> None:
         asyncio.run(cmd_eval(args))
     elif args.command == "dataset":
         asyncio.run(cmd_dataset(args))
+    elif args.command == "seeds":
+        asyncio.run(cmd_seeds(args))
 
 
 if __name__ == "__main__":
