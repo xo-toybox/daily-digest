@@ -1,6 +1,6 @@
 # Ralph Loop 2: Eval & Observability
 
-Read and update tracking at `.ralph/EVAL_IMPROVEMENTS.md`.
+Read and update tracking at `.ralph/IMPROVEMENTS-eval-framework.md`.
 Reference specs: `docs/observability.md` (design), `docs/observability-impl.md` (implementation).
 
 ## Core Loop
