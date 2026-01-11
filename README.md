@@ -10,6 +10,18 @@ Status: Minimal first pass for eval-driven iteration. Core flow functional.
 inbox.jsonl → expand (agent) → digest → archive by topic
 ```
 
+### Agent Graph
+
+```mermaid
+graph TD
+    __start__ --> agent
+    agent -.-> tools
+    tools --> agent
+    agent -. end .-> __end__
+```
+
+The agent loops between calling Claude (with tools bound) and executing tool calls until it produces structured JSON output or hits the 10-turn limit.
+
 ## Usage
 
 ```bash
