@@ -1,0 +1,41 @@
+{
+  "item_id": "20260111_200001",
+  "source_url": "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents",
+  "source_summary": "Anthropic's comprehensive engineering guide on building reliable agent evaluations, covering the complete lifecycle from initial task collection through long-term maintenance. The post provides practical frameworks for evaluating different agent types (coding, conversational, research, computer use) using multi-layer grading approaches (code-based, model-based, human), with emphasis on early eval development and distinguishing capability vs regression testing.",
+  "key_points": [
+    "Start with 20-50 real failure cases rather than waiting for hundreds of tasks - early development shows large effect sizes that small samples can detect",
+    "Three-layer grading system (code + LLM + human) addresses non-determinism while maintaining objectivity where possible",
+    "Capability evals (low pass rate, targeting struggles) vs regression evals (near 100% pass rate, preventing backsliding) serve different purposes in the development cycle",
+    "Agent evaluation requires environment isolation and state management - shared state between trials creates false correlations and unreliable metrics",
+    "pass@k (likelihood of at least one success in k attempts) vs pass^k (probability all k attempts succeed) capture different reliability requirements for different use cases",
+    "Reading transcripts is critical validation - scores without transcript review can create false confidence in broken evaluations",
+    "Eval-driven development: build evaluations to define capabilities before agents can fulfill them, then iterate until performance improves"
+  ],
+  "related": [
+    {
+      "url": "https://arxiv.org/html/2411.15594v6",
+      "title": "A Survey on LLM-as-a-Judge",
+      "relevance": "Comprehensive academic survey on LLM-as-judge reliability challenges that Anthropic's multi-layer grading addresses - covers calibration methods, bias mitigation, and standardization approaches essential for agent eval frameworks",
+      "source": "Web search for LLM-as-judge evaluation reliability"
+    },
+    {
+      "url": "https://o-mega.ai/articles/the-best-ai-agent-evals-and-benchmarks-full-2025-guide",
+      "title": "Best AI Agent Evaluation Benchmarks: 2025 Complete Guide",
+      "relevance": "Industry landscape analysis showing how Anthropic's framework fits within broader agent evaluation ecosystem - details specific benchmarks like WebArena, OSWorld that implement similar multi-environment approaches Anthropic recommends",
+      "source": "Web search for AI agent evaluation frameworks"
+    },
+    {
+      "url": "https://www.emergentmind.com/topics/llm-as-a-judge-evaluations",
+      "title": "LLM-as-a-Judge Evaluation Research",
+      "relevance": "Research aggregation highlighting ongoing reliability challenges in LLM-based evaluation that Anthropic's human calibration and rubric standardization directly addresses",
+      "source": "Web search for LLM-as-judge evaluation reliability"
+    }
+  ],
+  "assessment": "This represents authoritative industry guidance that synthesizes real deployment experience into actionable frameworks. Anthropic's emphasis on starting small (20-50 tasks), multi-layer grading, and transcript validation addresses core reliability challenges identified in academic research. The distinction between capability and regression evals provides clear operational guidance missing from most academic benchmarks. The framework's focus on environment isolation and non-determinism handling reflects sophisticated understanding of production deployment challenges.",
+  "research_notes": "Found strong convergence between Anthropic's practical approach and academic research on LLM-as-judge reliability. The multi-layer grading system directly addresses calibration and bias issues identified in surveys. Industry benchmarks (WebArena, OSWorld) are implementing similar isolation and multi-environment approaches. Academic work on LLM-as-judge bias mitigation validates Anthropic's human calibration recommendations.",
+  "topics": [
+    "agent-evaluation-methodology",
+    "production-ai-systems"
+  ],
+  "expanded_at": "2026-01-11T15:41:45.179008"
+}
