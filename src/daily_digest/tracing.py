@@ -10,12 +10,15 @@ TRACES_DIR = Path("traces")
 
 def is_tracing_enabled() -> bool:
     """Check if LangSmith tracing is enabled."""
-    return os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true"
+    # Support both old (LANGCHAIN_TRACING_V2) and new (LANGSMITH_TRACING) env vars
+    v2 = os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true"
+    new = os.environ.get("LANGSMITH_TRACING", "").lower() == "true"
+    return v2 or new
 
 
 def get_project_name() -> str:
     """Get the LangSmith project name."""
-    return os.environ.get("LANGCHAIN_PROJECT", "daily-digest")
+    return os.environ.get("LANGSMITH_PROJECT") or os.environ.get("LANGCHAIN_PROJECT") or "daily-digest"
 
 
 def export_recent_traces(limit: int = 10, output_dir: Path | None = None) -> list[Path]:
@@ -36,9 +39,9 @@ def export_recent_traces(limit: int = 10, output_dir: Path | None = None) -> lis
         print("langsmith not installed")
         return []
 
-    api_key = os.environ.get("LANGCHAIN_API_KEY")
+    api_key = os.environ.get("LANGCHAIN_API_KEY") or os.environ.get("LANGSMITH_API_KEY")
     if not api_key:
-        print("LANGCHAIN_API_KEY not set - cannot export traces")
+        print("LANGCHAIN_API_KEY or LANGSMITH_API_KEY not set - cannot export traces")
         return []
 
     output_dir = output_dir or TRACES_DIR
@@ -87,7 +90,7 @@ def print_tracing_status() -> None:
     """Print current tracing configuration status."""
     enabled = is_tracing_enabled()
     project = get_project_name()
-    api_key = os.environ.get("LANGCHAIN_API_KEY", "")
+    api_key = os.environ.get("LANGCHAIN_API_KEY") or os.environ.get("LANGSMITH_API_KEY") or ""
 
     print(f"LangSmith Tracing: {'enabled' if enabled else 'disabled'}")
     print(f"Project: {project}")

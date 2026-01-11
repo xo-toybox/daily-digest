@@ -7,8 +7,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
+
+# Load .env file if present (for LANGCHAIN_API_KEY, etc.)
+load_dotenv()
 
 from .agent import expand_item
 from .archive import (
