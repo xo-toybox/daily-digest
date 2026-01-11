@@ -18,6 +18,7 @@ from .archive import (
     list_topics,
 )
 from .digest import create_digest, generate_digest_markdown
+from .eval.runner import run_expansion_eval, format_eval_results
 from .models import Expansion, InboxItem, ItemType
 from .tracing import export_recent_traces, print_tracing_status
 
@@ -319,6 +320,39 @@ async def cmd_traces(args: argparse.Namespace) -> None:
         print_tracing_status()
 
 
+async def cmd_eval(args: argparse.Namespace) -> None:
+    """Run evaluators on expansions."""
+    expansions = load_expansions(DEFAULT_EXPANDED)
+    if not expansions:
+        console.print("[yellow]No expansions found. Run 'daily-digest run' first.[/yellow]")
+        return
+
+    # Filter by ID if specified
+    if args.id:
+        expansions = [e for e in expansions if e.item_id == args.id]
+        if not expansions:
+            console.print(f"[red]Expansion {args.id} not found.[/red]")
+            return
+
+    console.print(f"[bold]Evaluating {len(expansions)} expansion(s)...[/bold]\n")
+
+    for expansion in expansions:
+        console.print(Panel(f"[bold]{expansion.item_id}[/bold]", title="Evaluation"))
+
+        results = run_expansion_eval(
+            expansion,
+            include_model_based=args.model_based,
+        )
+
+        console.print(format_eval_results(results))
+        console.print()
+
+    if args.model_based:
+        console.print("[dim]Model-based evaluators ran (costs API calls).[/dim]")
+    else:
+        console.print("[dim]Use --model-based to run LLM-as-judge evaluators.[/dim]")
+
+
 def main() -> None:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(
@@ -351,6 +385,11 @@ def main() -> None:
     traces_parser.add_argument("--export", action="store_true", help="Export recent traces to local JSON")
     traces_parser.add_argument("--limit", type=int, default=10, help="Number of traces to export (default: 10)")
 
+    # eval command
+    eval_parser = subparsers.add_parser("eval", help="Run evaluators on expansions")
+    eval_parser.add_argument("--id", help="Evaluate specific expansion by ID")
+    eval_parser.add_argument("--model-based", action="store_true", help="Run LLM-as-judge evaluators (costs API calls)")
+
     args = parser.parse_args()
 
     # Run async command
@@ -366,6 +405,8 @@ def main() -> None:
         asyncio.run(cmd_topics(args))
     elif args.command == "traces":
         asyncio.run(cmd_traces(args))
+    elif args.command == "eval":
+        asyncio.run(cmd_eval(args))
 
 
 if __name__ == "__main__":
