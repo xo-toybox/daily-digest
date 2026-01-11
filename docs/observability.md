@@ -189,13 +189,7 @@ Eval Input (grouped by category/difficulty)
 
 ### Topic Categories
 
-> **Note**: Topic category taxonomy to be designed in a dedicated session. Categories define the bounded search scope for exploration subagents.
-
-Each category should have:
-- `name`: identifier
-- `description`: what this category covers
-- `search_constraints`: keywords, domains to include/exclude
-- `target_count`: how many seeds per category
+See [topic-taxonomy.md](./topic-taxonomy.md) for the full taxonomy defining bounded search scope for exploration subagents.
 
 ---
 

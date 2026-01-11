@@ -20,7 +20,6 @@ from .tools import (
     github_repo_info,
     github_search_repos,
 )
-from .trajectory import TrajectoryLogger
 
 # Initialize Tavily client (requires TAVILY_API_KEY env var)
 _tavily_client = None
@@ -317,14 +316,12 @@ async def expand_item(
     prior_context: str | None = None,
     known_topics: list[str] | None = None,
     local_content: str | None = None,
-    trajectory_logger: TrajectoryLogger | None = None,
     world_view: str | None = None,
 ) -> Expansion:
-    """Expand an inbox item using LangGraph agent with Claude."""
+    """Expand an inbox item using LangGraph agent with Claude.
 
-    # Log item start
-    if trajectory_logger:
-        trajectory_logger.log_item_start(item.id, item.content, item.note)
+    Tracing is handled automatically by LangSmith when LANGCHAIN_TRACING_V2=true.
+    """
 
     # Build initial prompt
     if item.item_type == ItemType.URL:
@@ -380,42 +377,21 @@ async def expand_item(
         "item_id": item.id,
     }
 
-    # Run the agent
+    # Run the agent (LangSmith traces automatically when LANGCHAIN_TRACING_V2=true)
     try:
         result = await graph.ainvoke(initial_state)
         messages = result["messages"]
-
-        # Log trajectory events from messages
-        if trajectory_logger:
-            turn = 0
-            for msg in messages:
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        trajectory_logger.log_tool_call(item.id, tc["name"], tc["args"], turn)
-                elif hasattr(msg, "content"):
-                    if isinstance(msg, AIMessage):
-                        if isinstance(msg.content, str):
-                            trajectory_logger.log_thinking(item.id, msg.content[:500], turn)
-                    turn += 1
 
         # Parse expansion from messages
         expansion = parse_expansion_from_messages(messages, item)
 
         if expansion:
-            if trajectory_logger:
-                trajectory_logger.log_item_complete(
-                    item.id, expansion.source_summary, expansion.topics,
-                    len(expansion.related), result.get("turn_count", 0)
-                )
             return expansion
 
-    except Exception as e:
-        if trajectory_logger:
-            trajectory_logger.log_error(item.id, str(e))
+    except Exception:
+        pass  # Errors are captured in LangSmith traces
 
     # Fallback if we couldn't parse proper output
-    if trajectory_logger:
-        trajectory_logger.log_error(item.id, "Agent did not produce structured output")
     return Expansion(
         item_id=item.id,
         source_summary="Expansion incomplete - agent did not produce structured output",

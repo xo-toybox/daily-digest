@@ -11,7 +11,6 @@ from rich.console import Console
 from rich.panel import Panel
 
 from .agent import expand_item
-from .trajectory import TrajectoryLogger
 from .archive import (
     archive_and_cleanup,
     find_related_expansions,
@@ -20,6 +19,7 @@ from .archive import (
 )
 from .digest import create_digest, generate_digest_markdown
 from .models import Expansion, InboxItem, ItemType
+from .tracing import export_recent_traces, print_tracing_status
 
 console = Console()
 
@@ -165,10 +165,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
         console.print("[green]All items already processed.[/green]")
         return
 
-    # Initialize trajectory logger
-    trajectory = TrajectoryLogger()
-    console.print(f"[dim]Trajectory run ID: {trajectory.run_id}[/dim]")
-
     # Load known topics from archive for consistency
     known_topics = list_topics(DEFAULT_ARCHIVE)
     if known_topics:
@@ -208,7 +204,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
                 prior_context=prior_context,
                 known_topics=known_topics,
                 local_content=local_content,
-                trajectory_logger=trajectory,
                 world_view=world_view_context,
             )
             path = save_expansion(expansion, DEFAULT_EXPANDED)
@@ -225,12 +220,10 @@ async def cmd_run(args: argparse.Namespace) -> None:
             console.print()
 
         except Exception as e:
-            trajectory.log_error(item.id, str(e))
             console.print(f"[red]Error processing {item.id}: {e}[/red]")
 
-    # Save trajectory
-    trajectory_path = trajectory.save()
-    console.print(f"\n[dim]Trajectory saved to {trajectory_path}[/dim]")
+    # Tracing handled by LangSmith when LANGCHAIN_TRACING_V2=true
+    console.print("\n[dim]Traces available in LangSmith (if configured)[/dim]")
 
 
 async def cmd_digest(args: argparse.Namespace) -> None:
@@ -311,6 +304,21 @@ async def cmd_topics(args: argparse.Namespace) -> None:
             console.print(f"    [dim]... and {len(expansions) - 3} more[/dim]")
 
 
+async def cmd_traces(args: argparse.Namespace) -> None:
+    """Show tracing status or export traces."""
+    if args.export:
+        console.print(f"[bold]Exporting last {args.limit} traces...[/bold]")
+        paths = export_recent_traces(limit=args.limit)
+        if paths:
+            console.print(f"[green]Exported {len(paths)} trace(s):[/green]")
+            for p in paths:
+                console.print(f"  {p}")
+        else:
+            console.print("[yellow]No traces exported. Check LANGCHAIN_API_KEY is set.[/yellow]")
+    else:
+        print_tracing_status()
+
+
 def main() -> None:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(
@@ -338,6 +346,11 @@ def main() -> None:
     # topics command
     topics_parser = subparsers.add_parser("topics", help="Show archive topics")
 
+    # traces command
+    traces_parser = subparsers.add_parser("traces", help="Show tracing status or export traces")
+    traces_parser.add_argument("--export", action="store_true", help="Export recent traces to local JSON")
+    traces_parser.add_argument("--limit", type=int, default=10, help="Number of traces to export (default: 10)")
+
     args = parser.parse_args()
 
     # Run async command
@@ -351,6 +364,8 @@ def main() -> None:
         asyncio.run(cmd_show(args))
     elif args.command == "topics":
         asyncio.run(cmd_topics(args))
+    elif args.command == "traces":
+        asyncio.run(cmd_traces(args))
 
 
 if __name__ == "__main__":
