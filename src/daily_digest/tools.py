@@ -137,7 +137,9 @@ class FetchResult:
     content_type: str | None = None
 
 
-async def fetch_url(url: str, timeout: float = 30.0, use_cache: bool = True) -> FetchResult:
+async def fetch_url(
+    url: str, timeout: float = 30.0, use_cache: bool = True, max_redirects: int = 5
+) -> FetchResult:
     """Fetch URL content and convert HTML to readable text. Caches to filesystem."""
     # SSRF Protection: Validate URL before fetching
     is_safe, error_msg = validate_url_security(url)
@@ -156,10 +158,30 @@ async def fetch_url(url: str, timeout: float = 30.0, use_cache: bool = True) -> 
                 content_type=cached.get("content_type"),
             )
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+    # Disable auto-redirects; validate each redirect target for SSRF protection
+    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
         try:
             headers = {"User-Agent": USER_AGENT}
-            resp = await client.get(url, headers=headers)
+            current_url = url
+            for _ in range(max_redirects):
+                resp = await client.get(current_url, headers=headers)
+                if resp.is_redirect:
+                    redirect_url = str(resp.headers.get("location", ""))
+                    if not redirect_url:
+                        return FetchResult(url=url, success=False, error="Redirect with no location")
+                    # Handle relative redirects
+                    if redirect_url.startswith("/"):
+                        parsed = urlparse(current_url)
+                        redirect_url = f"{parsed.scheme}://{parsed.netloc}{redirect_url}"
+                    # Validate redirect target for SSRF
+                    is_safe, error_msg = validate_url_security(redirect_url)
+                    if not is_safe:
+                        return FetchResult(url=url, success=False, error=f"Blocked redirect: {error_msg}")
+                    current_url = redirect_url
+                    continue
+                break
+            else:
+                return FetchResult(url=url, success=False, error="Too many redirects")
             resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "")

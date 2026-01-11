@@ -1,16 +1,28 @@
 """Archive management - store expansions by topic for future reference."""
 
 import json
+import re
 from pathlib import Path
 
 from .models import Expansion
 
+_TOPIC_SLUG_RE = re.compile(r"[^a-z0-9._-]+")
+
+
+def _slugify_topic(topic: str) -> str:
+    """Convert topic to safe filesystem slug."""
+    slug = _TOPIC_SLUG_RE.sub("-", (topic or "").lower()).strip("-")
+    return (slug or "uncategorized")[:128]
+
 
 def get_archive_path(base: Path, topic: str) -> Path:
-    """Get archive directory for a topic."""
-    # Sanitize topic name for filesystem
-    safe_topic = topic.lower().replace(" ", "-").replace("/", "-")
-    return base / safe_topic
+    """Get archive directory for a topic. Raises ValueError if path escapes base."""
+    safe_topic = _slugify_topic(topic)
+    base_resolved = base.resolve(strict=False)
+    path = (base / safe_topic).resolve(strict=False)
+    if path != base_resolved and base_resolved not in path.parents:
+        raise ValueError(f"Invalid topic path: {topic!r}")
+    return path
 
 
 def archive_expansion(expansion: Expansion, archive_dir: Path) -> list[Path]:

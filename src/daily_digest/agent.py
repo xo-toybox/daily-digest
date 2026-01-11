@@ -225,6 +225,7 @@ If prior research context is provided, use it to:
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     turn_count: int
+    max_turns: int
     item_id: str
 
 
@@ -232,9 +233,10 @@ def should_continue(state: AgentState) -> str:
     """Determine if the agent should continue or end."""
     messages = state["messages"]
     turn_count = state.get("turn_count", 0)
+    max_turns = state.get("max_turns", 10)
 
     # Check turn limit
-    if turn_count >= 10:
+    if turn_count >= max_turns:
         return "end"
 
     # Check if last message is from AI and has tool calls
@@ -374,6 +376,7 @@ async def expand_item(
             HumanMessage(content=user_prompt),
         ],
         "turn_count": 0,
+        "max_turns": max_turns,
         "item_id": item.id,
     }
 

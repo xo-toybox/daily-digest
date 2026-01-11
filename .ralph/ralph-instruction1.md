@@ -1,4 +1,4 @@
-Read and update tracking doc at .ralph/improvements.md. 
+Read and update tracking doc at .ralph/IMPROVEMENTS.md. 
 Read and reference docs/spec.md. At critical design decision points, review docs/spec.md to ensure it is up to date with general guidance that have sharpened, evolved, or added. 
 Run the code and iterate. 
 
