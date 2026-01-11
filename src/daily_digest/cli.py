@@ -19,6 +19,7 @@ from .archive import (
 )
 from .digest import create_digest, generate_digest_markdown
 from .eval.runner import run_expansion_eval, format_eval_results
+from .eval.datasets import list_datasets, export_dataset_to_jsonl, import_dataset_from_jsonl
 from .models import Expansion, InboxItem, ItemType
 from .tracing import export_recent_traces, print_tracing_status
 
@@ -353,6 +354,46 @@ async def cmd_eval(args: argparse.Namespace) -> None:
         console.print("[dim]Use --model-based to run LLM-as-judge evaluators.[/dim]")
 
 
+async def cmd_dataset(args: argparse.Namespace) -> None:
+    """Manage LangSmith datasets."""
+    if args.action == "list":
+        datasets = list_datasets()
+        if not datasets:
+            console.print("[yellow]No datasets found. Check LANGCHAIN_API_KEY is set.[/yellow]")
+            return
+
+        console.print(f"[bold]Datasets ({len(datasets)}):[/bold]\n")
+        for ds in datasets:
+            console.print(f"  [cyan]{ds['name']}[/cyan] ({ds['example_count']} examples)")
+            if ds.get("description"):
+                console.print(f"    [dim]{ds['description']}[/dim]")
+
+    elif args.action == "export":
+        if not args.name:
+            console.print("[red]--name required for export[/red]")
+            return
+        output = Path(args.output or f"{args.name}.jsonl")
+        count = export_dataset_to_jsonl(args.name, output)
+        if count:
+            console.print(f"[green]Exported {count} examples to {output}[/green]")
+        else:
+            console.print("[red]Export failed. Check dataset name and API key.[/red]")
+
+    elif args.action == "import":
+        if not args.name or not args.file:
+            console.print("[red]--name and --file required for import[/red]")
+            return
+        input_path = Path(args.file)
+        if not input_path.exists():
+            console.print(f"[red]File not found: {args.file}[/red]")
+            return
+        count = import_dataset_from_jsonl(args.name, input_path)
+        if count:
+            console.print(f"[green]Imported {count} examples to {args.name}[/green]")
+        else:
+            console.print("[red]Import failed. Check dataset exists and API key.[/red]")
+
+
 def main() -> None:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(
@@ -390,6 +431,13 @@ def main() -> None:
     eval_parser.add_argument("--id", help="Evaluate specific expansion by ID")
     eval_parser.add_argument("--model-based", action="store_true", help="Run LLM-as-judge evaluators (costs API calls)")
 
+    # dataset command
+    dataset_parser = subparsers.add_parser("dataset", help="Manage LangSmith datasets")
+    dataset_parser.add_argument("action", choices=["list", "export", "import"], help="Action to perform")
+    dataset_parser.add_argument("--name", help="Dataset name")
+    dataset_parser.add_argument("--file", help="JSONL file for import")
+    dataset_parser.add_argument("--output", help="Output path for export")
+
     args = parser.parse_args()
 
     # Run async command
@@ -407,6 +455,8 @@ def main() -> None:
         asyncio.run(cmd_traces(args))
     elif args.command == "eval":
         asyncio.run(cmd_eval(args))
+    elif args.command == "dataset":
+        asyncio.run(cmd_dataset(args))
 
 
 if __name__ == "__main__":
