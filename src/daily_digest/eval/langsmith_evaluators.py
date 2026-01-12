@@ -21,6 +21,28 @@ from .expansion_evaluators import _get_llm_judge
 # ============================================================
 
 
+def _collect_tool_calls_recursive(child_runs: list | None) -> list:
+    """Recursively collect all tool runs from nested child_runs.
+
+    LangGraph nests tool calls inside "tools" chain runs.
+    This function traverses the full tree to find all tool runs.
+    """
+    if not child_runs:
+        return []
+
+    tool_calls = []
+    for run in child_runs:
+        run_type = getattr(run, "run_type", "")
+        if run_type == "tool":
+            tool_calls.append(run)
+        # Recursively search nested children
+        nested = getattr(run, "child_runs", None)
+        if nested:
+            tool_calls.extend(_collect_tool_calls_recursive(nested))
+
+    return tool_calls
+
+
 def _extract_expansion_from_messages(messages: list) -> dict | None:
     """Extract expansion JSON from LangGraph message history.
 
@@ -62,6 +84,40 @@ def _get_inputs_from_run(run: Any, example: Any | None) -> dict:
     return getattr(run, "inputs", None) or {}
 
 
+def _extract_fetched_content(run: Any) -> list[str]:
+    """Extract content from fetch tool outputs for groundedness verification.
+
+    Returns list of content strings from fetch_url, github_repo, web_search outputs.
+    """
+    child_runs = getattr(run, "child_runs", None) or []
+    tool_calls = _collect_tool_calls_recursive(child_runs)
+
+    fetched_content = []
+    fetch_tools = {"fetch_url", "fetch_tweet", "web_search", "github_repo"}
+
+    for tc in tool_calls:
+        tool_name = getattr(tc, "name", "")
+        if tool_name in fetch_tools:
+            outputs = getattr(tc, "outputs", None)
+            if outputs:
+                # Extract content from various output formats
+                content = None
+                if isinstance(outputs, dict):
+                    content = outputs.get("content") or outputs.get("output") or str(outputs)
+                elif isinstance(outputs, str):
+                    content = outputs
+                else:
+                    content = str(outputs)
+
+                if content and len(content) > 50:  # Skip empty/tiny outputs
+                    # Truncate very long content to avoid token limits
+                    if len(content) > 2000:
+                        content = content[:2000] + "... [truncated]"
+                    fetched_content.append(f"[{tool_name}]: {content}")
+
+    return fetched_content
+
+
 def _format_trajectory_for_agentevals(run: Any) -> list[dict]:
     """Convert LangSmith run with child_runs to agentevals trajectory format.
 
@@ -80,28 +136,37 @@ def _format_trajectory_for_agentevals(run: Any) -> list[dict]:
         user_content = inputs.get("content", "") or str(inputs)
         trajectory.append({"role": "user", "content": user_content})
 
-    # Process child runs (tool calls and their results)
+    # Process tool calls - use recursive collector for LangGraph nested structure
     child_runs = getattr(run, "child_runs", None) or []
-    for child in child_runs:
-        if getattr(child, "run_type", "") == "tool":
-            # Tool call from assistant
-            tool_name = getattr(child, "name", "unknown")
-            tool_inputs = getattr(child, "inputs", None) or {}
-            tool_call = {
-                "function": {
-                    "name": tool_name,
-                    "arguments": json.dumps(tool_inputs),
-                }
-            }
-            trajectory.append(
-                {"role": "assistant", "content": "", "tool_calls": [tool_call]}
-            )
+    tool_calls = _collect_tool_calls_recursive(child_runs)
 
-            # Tool result
-            tool_outputs = getattr(child, "outputs", None)
-            trajectory.append(
-                {"role": "tool", "content": str(tool_outputs) if tool_outputs else ""}
-            )
+    for i, tc in enumerate(tool_calls):
+        # Generate stable tool_call_id from run id or index
+        run_id = str(getattr(tc, "id", "")) or str(i)
+        tool_call_id = f"call_{run_id[:8]}"
+
+        # Tool call from assistant (OpenAI format)
+        tool_name = getattr(tc, "name", "unknown")
+        tool_inputs = getattr(tc, "inputs", None) or {}
+        tool_call = {
+            "id": tool_call_id,
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(tool_inputs),
+            }
+        }
+        trajectory.append(
+            {"role": "assistant", "content": "", "tool_calls": [tool_call]}
+        )
+
+        # Tool result with matching tool_call_id
+        tool_outputs = getattr(tc, "outputs", None)
+        trajectory.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": str(tool_outputs) if tool_outputs else ""
+        })
 
     # Add final assistant response
     outputs = getattr(run, "outputs", None) or {}
@@ -128,14 +193,18 @@ def structure_evaluator_ls(run: Any, example: Any | None) -> dict:
     """LangSmith-compatible structure evaluator.
 
     Checks if run outputs have required expansion fields.
+    Note: Empty lists/strings are valid (e.g., no key_points extracted).
+    Only missing fields or None values fail.
     """
     outputs = _get_outputs_from_run(run)
 
     required = ["source_summary", "key_points", "related", "topics"]
-    missing = [k for k in required if k not in outputs or not outputs[k]]
+    # Only fail if field is missing entirely or is None
+    # Empty lists/strings are valid (agent may legitimately produce no items)
+    missing = [k for k in required if k not in outputs or outputs[k] is None]
 
     return {
-        "key": "structure",
+        "metric_name": "structure",
         "score": 1.0 if not missing else 0.0,
         "pass": len(missing) == 0,
         "missing_fields": missing,
@@ -146,9 +215,35 @@ def efficiency_evaluator_ls(run: Any, example: Any | None) -> dict:
     """LangSmith-compatible efficiency evaluator.
 
     Requires load_nested=True to access child_runs.
+
+    Scoring:
+    - No tool calls at all: 0.5 (not ideal but may be valid for simple expansions)
+    - Zero redundant calls: 1.0 (optimal)
+    - Redundant calls: penalized proportionally
     """
-    child_runs = getattr(run, "child_runs", None) or []
-    tool_calls = [c for c in child_runs if getattr(c, "run_type", "") == "tool"]
+    child_runs = getattr(run, "child_runs", None)
+    if child_runs is None:
+        return {
+            "metric_name": "efficiency",
+            "score": None,
+            "error": "child_runs not loaded - ensure load_nested=True",
+            "tool_calls": 0,
+            "redundant": 0,
+            "efficient": False,
+        }
+
+    # Use recursive collector because LangGraph nests tools inside chain runs
+    tool_calls = _collect_tool_calls_recursive(child_runs)
+
+    # No tool calls - neutral score (may be valid for some inputs)
+    if not tool_calls:
+        return {
+            "metric_name": "efficiency",
+            "score": 0.5,  # Neutral - no evidence of inefficiency OR efficiency
+            "tool_calls": 0,
+            "redundant": 0,
+            "efficient": True,  # No redundancy by definition
+        }
 
     # Check for redundant patterns
     redundant = 0
@@ -169,10 +264,9 @@ def efficiency_evaluator_ls(run: Any, example: Any | None) -> dict:
                 redundant += 1
             urls_fetched.add(url)
 
-    total_calls = max(len(tool_calls), 1)
     return {
-        "key": "efficiency",
-        "score": 1 - (redundant / total_calls),
+        "metric_name": "efficiency",
+        "score": 1 - (redundant / len(tool_calls)),
         "tool_calls": len(tool_calls),
         "redundant": redundant,
         "efficient": redundant == 0,
@@ -183,15 +277,25 @@ def sources_retrieved_evaluator_ls(run: Any, example: Any | None) -> dict:
     """LangSmith-compatible sources retrieved evaluator.
 
     Requires load_nested=True to access child_runs.
+    Returns error if child_runs not available.
     """
-    child_runs = getattr(run, "child_runs", None) or []
-    tool_calls = [c for c in child_runs if getattr(c, "run_type", "") == "tool"]
+    child_runs = getattr(run, "child_runs", None)
+    if child_runs is None:
+        return {
+            "metric_name": "sources_retrieved",
+            "score": None,
+            "error": "child_runs not loaded - ensure load_nested=True",
+            "pass": False,
+        }
+
+    # Use recursive collector because LangGraph nests tools inside chain runs
+    tool_calls = _collect_tool_calls_recursive(child_runs)
 
     fetch_tools = {"fetch_url", "fetch_tweet", "web_search", "github_repo"}
     retrieved = any(getattr(tc, "name", "") in fetch_tools for tc in tool_calls)
 
     return {
-        "key": "sources_retrieved",
+        "metric_name": "sources_retrieved",
         "score": 1.0 if retrieved else 0.0,
         "pass": retrieved,
     }
@@ -208,31 +312,41 @@ _topic_judge = None
 
 
 def groundedness_evaluator_ls(run: Any, example: Any | None) -> dict:
-    """LangSmith-compatible groundedness evaluator."""
+    """LangSmith-compatible groundedness evaluator.
+
+    Extracts fetched content from tool outputs to enable verification.
+    """
     global _groundedness_judge
     if _groundedness_judge is None:
         _groundedness_judge = _get_llm_judge(
-            prompt="""Evaluate if the expansion's claims are grounded in retrieved sources.
+            prompt="""Evaluate if the expansion's claims are grounded in the retrieved source content.
 
-Source Summary: {outputs[source_summary]}
-Key Points: {outputs[key_points]}
-Research Notes: {outputs[research_notes]}
+Compare the expansion outputs against the fetched source content to verify claims.
+
+Expansion outputs (claims to verify):
+{outputs}
 
 Score 1-5:
-5: All claims traceable to sources, no hallucination
+5: All claims traceable to fetched sources, no hallucination
 4: Most claims grounded, minor unsupported details
 3: Mix of grounded and speculative claims
 2: Significant claims lack source support
 1: Appears to hallucinate or fabricate information
 
-Explain which specific claims lack grounding."""
+Explain which specific claims lack grounding in the fetched content."""
         )
 
     outputs = _get_outputs_from_run(run)
+
+    # Extract fetched content from tool outputs for verification
+    fetched_content = _extract_fetched_content(run)
+    if fetched_content:
+        outputs = dict(outputs)  # Copy to avoid mutation
+        outputs["_fetched_sources"] = "\n\n".join(fetched_content)
     inputs = _get_inputs_from_run(run, example)
 
     result = _groundedness_judge(inputs=inputs, outputs=outputs)
-    return {"key": "groundedness", **result}
+    return {**result, "metric_name": "groundedness"}
 
 
 def coverage_evaluator_ls(run: Any, example: Any | None) -> dict:
@@ -242,10 +356,11 @@ def coverage_evaluator_ls(run: Any, example: Any | None) -> dict:
         _coverage_judge = _get_llm_judge(
             prompt="""Evaluate if the expansion captures the essential insights from the source.
 
-Original URL/Content: {inputs[content]}
-User's Interest: {inputs[note]}
-Summary Produced: {outputs[source_summary]}
-Key Points: {outputs[key_points]}
+Inputs (original content/URL):
+{inputs}
+
+Expansion outputs:
+{outputs}
 
 Score 1-5:
 5: Comprehensive - captures all important insights, nothing significant missed
@@ -261,7 +376,7 @@ What important aspects were missed?"""
     inputs = _get_inputs_from_run(run, example)
 
     result = _coverage_judge(inputs=inputs, outputs=outputs)
-    return {"key": "coverage", **result}
+    return {**result, "metric_name": "coverage"}
 
 
 def authority_evaluator_ls(run: Any, example: Any | None) -> dict:
@@ -271,8 +386,8 @@ def authority_evaluator_ls(run: Any, example: Any | None) -> dict:
         _authority_judge = _get_llm_judge(
             prompt="""Evaluate if related items come from authoritative sources.
 
-Related Items Found:
-{outputs[related]}
+Expansion outputs:
+{outputs}
 
 Score 1-5:
 5: All sources are authoritative (official docs, primary authors, established publications)
@@ -288,7 +403,7 @@ Which sources lack authority and why?"""
     inputs = _get_inputs_from_run(run, example)
 
     result = _authority_judge(inputs=inputs, outputs=outputs)
-    return {"key": "authority", **result}
+    return {**result, "metric_name": "authority"}
 
 
 def topic_evaluator_ls(run: Any, example: Any | None) -> dict:
@@ -301,20 +416,22 @@ def topic_evaluator_ls(run: Any, example: Any | None) -> dict:
 Good: "building-reliable-ai-systems" (problem space)
 Bad: "evals", "testing", "monitoring" (keywords)
 
-Topics: {outputs[topics]}
-Content Summary: {outputs[source_summary]}
+Expansion outputs:
+{outputs}
 
 Score 1-5:
-5: All topics are meaningful semantic groupings
-3: Mix of semantic and keyword-style
-1: All topics are superficial keywords"""
+5: All topics are meaningful semantic groupings (problem spaces or domains)
+4: Most topics are semantic, one may be keyword-ish
+3: Mix of semantic and keyword-style topics
+2: Most topics are keywords, one may be semantic
+1: All topics are superficial keywords or too generic"""
         )
 
     outputs = _get_outputs_from_run(run)
     inputs = _get_inputs_from_run(run, example)
 
     result = _topic_judge(inputs=inputs, outputs=outputs)
-    return {"key": "topic_quality", **result}
+    return {**result, "metric_name": "topic_quality"}
 
 
 # ============================================================
@@ -360,6 +477,10 @@ def trajectory_tool_efficiency(run: Any, example: Any | None) -> dict:
         _tool_efficiency_evaluator = _get_trajectory_evaluator(
             prompt="""Evaluate the agent's tool usage efficiency in this research task.
 
+<trajectory>
+{outputs}
+</trajectory>
+
 Consider:
 1. Redundancy: Did the agent call the same tool with same inputs multiple times?
 2. Necessity: Were all tool calls necessary, or could some be avoided?
@@ -378,7 +499,7 @@ Explain specific inefficiencies observed."""
 
     trajectory = _format_trajectory_for_agentevals(run)
     result = _tool_efficiency_evaluator(outputs=trajectory)
-    return {"key": "trajectory_tool_efficiency", **result}
+    return {**result, "metric_name": "trajectory_tool_efficiency"}
 
 
 def trajectory_reasoning_quality(run: Any, example: Any | None) -> dict:
@@ -394,6 +515,10 @@ def trajectory_reasoning_quality(run: Any, example: Any | None) -> dict:
     if _reasoning_quality_evaluator is None:
         _reasoning_quality_evaluator = _get_trajectory_evaluator(
             prompt="""Evaluate the agent's reasoning and decision-making quality.
+
+<trajectory>
+{outputs}
+</trajectory>
 
 Consider:
 1. Search strategy: Did agent formulate good search queries?
@@ -414,7 +539,7 @@ Explain the reasoning patterns observed."""
 
     trajectory = _format_trajectory_for_agentevals(run)
     result = _reasoning_quality_evaluator(outputs=trajectory)
-    return {"key": "trajectory_reasoning", **result}
+    return {**result, "metric_name": "trajectory_reasoning"}
 
 
 def trajectory_goal_completion(run: Any, example: Any | None) -> dict:
@@ -430,6 +555,10 @@ def trajectory_goal_completion(run: Any, example: Any | None) -> dict:
     if _goal_completion_evaluator is None:
         _goal_completion_evaluator = _get_trajectory_evaluator(
             prompt="""Evaluate whether the agent accomplished the research goal.
+
+<trajectory>
+{outputs}
+</trajectory>
 
 The agent was asked to expand a seed (URL, idea, or question) into:
 - Source summary
@@ -456,7 +585,7 @@ What aspects were handled well or poorly?"""
 
     trajectory = _format_trajectory_for_agentevals(run)
     result = _goal_completion_evaluator(outputs=trajectory)
-    return {"key": "trajectory_goal_completion", **result}
+    return {**result, "metric_name": "trajectory_goal_completion"}
 
 
 # ============================================================

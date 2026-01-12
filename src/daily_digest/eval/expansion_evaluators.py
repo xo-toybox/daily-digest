@@ -17,11 +17,15 @@ def structure_evaluator(inputs: dict, outputs: dict) -> dict:
     """Check if output has required structure.
 
     Returns score of 1.0 if all required fields present, 0.0 otherwise.
+    Note: Empty lists/strings are valid (e.g., no key_points extracted).
+    Only missing fields or None values fail.
     """
     required = ["source_summary", "key_points", "related", "topics"]
-    missing = [k for k in required if k not in outputs or not outputs[k]]
+    # Only fail if field is missing entirely or is None
+    # Empty lists/strings are valid (agent may legitimately produce no items)
+    missing = [k for k in required if k not in outputs or outputs[k] is None]
     return {
-        "key": "structure",
+        "metric_name": "structure",
         "score": 1.0 if not missing else 0.0,
         "pass": len(missing) == 0,
         "missing_fields": missing,
@@ -63,7 +67,7 @@ def efficiency_evaluator(run: Any, example: Any) -> dict:
 
     total_calls = max(len(tool_calls), 1)
     return {
-        "key": "efficiency",
+        "metric_name": "efficiency",
         "score": 1 - (redundant / total_calls),
         "tool_calls": len(tool_calls),
         "turns_used": turns_used,
@@ -84,7 +88,7 @@ def sources_retrieved_evaluator(run: Any, example: Any) -> dict:
     )
 
     return {
-        "key": "sources_retrieved",
+        "metric_name": "sources_retrieved",
         "score": 1.0 if retrieved else 0.0,
         "pass": retrieved,
     }
@@ -129,9 +133,8 @@ def groundedness_evaluator(inputs: dict, outputs: dict) -> dict:
         _groundedness_evaluator = _get_llm_judge(
             prompt="""Evaluate if the expansion's claims are grounded in retrieved sources.
 
-Source Summary: {outputs[source_summary]}
-Key Points: {outputs[key_points]}
-Research Notes: {outputs[research_notes]}
+Expansion outputs:
+{outputs}
 
 Score 1-5:
 5: All claims traceable to sources, no hallucination
@@ -143,7 +146,7 @@ Score 1-5:
 Explain which specific claims lack grounding."""
         )
     result = _groundedness_evaluator(inputs=inputs, outputs=outputs)
-    return {"key": "groundedness", **result}
+    return {**result, "metric_name": "groundedness"}
 
 
 def coverage_evaluator(inputs: dict, outputs: dict) -> dict:
@@ -153,10 +156,11 @@ def coverage_evaluator(inputs: dict, outputs: dict) -> dict:
         _coverage_evaluator = _get_llm_judge(
             prompt="""Evaluate if the expansion captures the essential insights from the source.
 
-Original URL/Content: {inputs[content]}
-User's Interest: {inputs[note]}
-Summary Produced: {outputs[source_summary]}
-Key Points: {outputs[key_points]}
+Inputs (original content/URL):
+{inputs}
+
+Expansion outputs:
+{outputs}
 
 Score 1-5:
 5: Comprehensive - captures all important insights, nothing significant missed
@@ -168,7 +172,7 @@ Score 1-5:
 What important aspects were missed?"""
         )
     result = _coverage_evaluator(inputs=inputs, outputs=outputs)
-    return {"key": "coverage", **result}
+    return {**result, "metric_name": "coverage"}
 
 
 def authority_evaluator(inputs: dict, outputs: dict) -> dict:
@@ -178,8 +182,8 @@ def authority_evaluator(inputs: dict, outputs: dict) -> dict:
         _authority_evaluator = _get_llm_judge(
             prompt="""Evaluate if related items come from authoritative sources.
 
-Related Items Found:
-{outputs[related]}
+Expansion outputs:
+{outputs}
 
 Score 1-5:
 5: All sources are authoritative (official docs, primary authors, established publications)
@@ -191,7 +195,7 @@ Score 1-5:
 Which sources lack authority and why?"""
         )
     result = _authority_evaluator(inputs=inputs, outputs=outputs)
-    return {"key": "authority", **result}
+    return {**result, "metric_name": "authority"}
 
 
 def topic_evaluator(inputs: dict, outputs: dict) -> dict:
@@ -204,13 +208,15 @@ def topic_evaluator(inputs: dict, outputs: dict) -> dict:
 Good: "building-reliable-ai-systems" (problem space)
 Bad: "evals", "testing", "monitoring" (keywords)
 
-Topics: {outputs[topics]}
-Content Summary: {outputs[source_summary]}
+Expansion outputs:
+{outputs}
 
 Score 1-5:
-5: All topics are meaningful semantic groupings
-3: Mix of semantic and keyword-style
-1: All topics are superficial keywords"""
+5: All topics are meaningful semantic groupings (problem spaces or domains)
+4: Most topics are semantic, one may be keyword-ish
+3: Mix of semantic and keyword-style topics
+2: Most topics are keywords, one may be semantic
+1: All topics are superficial keywords or too generic"""
         )
     result = _topic_evaluator(inputs=inputs, outputs=outputs)
-    return {"key": "topic_quality", **result}
+    return {**result, "metric_name": "topic_quality"}

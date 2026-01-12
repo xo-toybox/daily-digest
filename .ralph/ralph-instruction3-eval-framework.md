@@ -18,6 +18,8 @@ daily-digest eval --experiment "expansion-v1" --trajectory --model-based
 daily-digest eval --model-based
 ```
 
+Sample (seeds sample cli command) from approved.jsonl into inbox.jsonl for fresh runs of the expansion or digest when needed.  
+
 Iterate until evaluators produce reliable, discriminating quality signals.
 
 ## Evaluation Modes

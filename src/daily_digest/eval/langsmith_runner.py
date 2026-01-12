@@ -149,12 +149,13 @@ def evaluate_recent_runs(
 
     client = _get_langsmith_client()
 
-    # Get recent runs - top-level agent runs only
+    # Get recent runs - filter for actual expand_item/LangGraph runs, not evaluator runs
+    # Use is_root=true and name matching to avoid picking up child runs or evaluator runs
     runs = list(
         client.list_runs(
             project_name=project_name,
             limit=limit,
-            filter='eq(run_type, "chain")',
+            filter='and(eq(is_root, true), or(eq(name, "LangGraph"), eq(name, "expand_item")))',
         )
     )
 
@@ -172,7 +173,7 @@ def evaluate_recent_runs(
         for evaluator in evaluators:
             try:
                 eval_result = evaluator(full_run, None)
-                key = eval_result.get("key", evaluator.__name__)
+                key = eval_result.get("metric_name", eval_result.get("key", evaluator.__name__))
                 run_results["evaluations"][key] = eval_result
             except Exception as e:
                 run_results["evaluations"][evaluator.__name__] = {"error": str(e)}

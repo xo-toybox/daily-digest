@@ -335,6 +335,31 @@ async def cmd_traces(args: argparse.Namespace) -> None:
 
 async def cmd_eval(args: argparse.Namespace) -> None:
     """Run evaluators on expansions or LangSmith traces."""
+    import os
+
+    # Disable tracing for evaluator calls by default to avoid burning quota
+    # Support both old (LANGCHAIN_TRACING_V2) and new (LANGSMITH_TRACING) env vars
+    original_v2 = os.environ.get("LANGCHAIN_TRACING_V2")
+    original_new = os.environ.get("LANGSMITH_TRACING")
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    os.environ["LANGSMITH_TRACING"] = "false"
+
+    try:
+        await _run_eval(args)
+    finally:
+        # Restore original tracing settings
+        if original_v2:
+            os.environ["LANGCHAIN_TRACING_V2"] = original_v2
+        elif "LANGCHAIN_TRACING_V2" in os.environ:
+            del os.environ["LANGCHAIN_TRACING_V2"]
+        if original_new:
+            os.environ["LANGSMITH_TRACING"] = original_new
+        elif "LANGSMITH_TRACING" in os.environ:
+            del os.environ["LANGSMITH_TRACING"]
+
+
+async def _run_eval(args: argparse.Namespace) -> None:
+    """Internal eval implementation."""
     # LangSmith experiment evaluation mode
     if args.experiment:
         from .eval.langsmith_runner import run_langsmith_eval
@@ -371,6 +396,52 @@ async def cmd_eval(args: argparse.Namespace) -> None:
 
             if args.trajectory:
                 console.print("\n[dim]Trajectory evaluators ran (costs API calls).[/dim]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Pass@k variance testing mode
+    if args.pass_at_k:
+        from .eval.pass_at_k import eval_pass_at_k, format_pass_at_k_results
+        from .agent import expand_item
+
+        k = args.pass_at_k
+        threshold = args.threshold
+
+        # Get first pending inbox item or use --id to specify
+        inbox = load_inbox(DEFAULT_INBOX)
+        if args.id:
+            # Find specific item
+            item = next((i for i in inbox if i.id == args.id), None)
+            if not item:
+                console.print(f"[red]Item {args.id} not found in inbox[/red]")
+                return
+        elif inbox:
+            item = inbox[0]
+        else:
+            console.print("[yellow]No inbox items. Add one with 'daily-digest add'[/yellow]")
+            return
+
+        console.print(f"[bold]Running pass@{k} variance test[/bold]")
+        console.print(f"  Item: {item.content[:60]}...")
+        console.print(f"  Threshold: {threshold}")
+        console.print()
+
+        try:
+            results = await eval_pass_at_k(
+                item=item,
+                expand_fn=expand_item,
+                k=k,
+                threshold=threshold,
+                include_model_based=args.model_based,
+            )
+            console.print(format_pass_at_k_results(results))
+
+            # Check exit criteria
+            if results.get("variance", 1.0) < 0.2:
+                console.print("\n[green]✓ Variance < 0.2 - meets exit criteria[/green]")
+            else:
+                console.print("\n[yellow]⚠ Variance >= 0.2 - does not meet exit criteria[/yellow]")
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
         return
@@ -687,6 +758,48 @@ async def cmd_seeds(args: argparse.Namespace) -> None:
             count = export_seeds_to_jsonl(all_seeds, output_path)
             console.print(f"\n[green]Exported {count} seeds to {output_path}[/green]")
 
+    elif args.action == "sample":
+        # Sample approved seeds into inbox format
+        if not args.from_file:
+            console.print("[red]--from required for sample action[/red]")
+            return
+
+        from_path = Path(args.from_file)
+        if not from_path.exists():
+            console.print(f"[red]File not found: {args.from_file}[/red]")
+            return
+
+        # Read approved seeds
+        seeds = []
+        with from_path.open() as f:
+            for line in f:
+                if line.strip():
+                    seeds.append(json.loads(line))
+
+        if not seeds:
+            console.print("[yellow]No seeds found in file.[/yellow]")
+            return
+
+        # Sample or take all
+        if args.count and args.count < len(seeds):
+            import random
+            seeds = random.sample(seeds, args.count)
+        elif not args.sample_all and not args.count:
+            console.print("[red]Specify --count N or --all[/red]")
+            return
+
+        # Convert to InboxItem format and append to target
+        to_path = Path(args.to or "inbox.jsonl")
+        with to_path.open("a") as f:
+            for seed in seeds:
+                item = InboxItem.from_url(
+                    url=seed["content"],
+                    note=seed.get("note"),
+                )
+                f.write(item.model_dump_json() + "\n")
+
+        console.print(f"[green]Sampled {len(seeds)} seeds to {to_path}[/green]")
+
 
 def main() -> None:
     """CLI entrypoint."""
@@ -728,6 +841,8 @@ def main() -> None:
     eval_parser.add_argument("--recent", action="store_true", help="Evaluate recent traced runs")
     eval_parser.add_argument("--limit", type=int, default=10, help="Number of recent runs to evaluate (default: 10)")
     eval_parser.add_argument("--trajectory", action="store_true", help="Include trajectory evaluators from agentevals")
+    eval_parser.add_argument("--pass-at-k", type=int, metavar="K", help="Run pass@k variance test (runs expansion K times)")
+    eval_parser.add_argument("--threshold", type=float, default=0.7, help="Score threshold for pass@k (default: 0.7)")
 
     # dataset command
     dataset_parser = subparsers.add_parser("dataset", help="Manage LangSmith datasets")
@@ -738,7 +853,7 @@ def main() -> None:
 
     # seeds command
     seeds_parser = subparsers.add_parser("seeds", help="Manage seed input collection")
-    seeds_parser.add_argument("action", choices=["categories", "validate", "collect", "review"], help="Action to perform")
+    seeds_parser.add_argument("action", choices=["categories", "validate", "collect", "review", "sample"], help="Action to perform")
     seeds_parser.add_argument("--layer", choices=["engineering", "product", "research"], help="Filter by layer")
     seeds_parser.add_argument("--url", help="URL to validate")
     seeds_parser.add_argument("--categories", help="Comma-separated category names for collect")
@@ -749,6 +864,11 @@ def main() -> None:
     seeds_parser.add_argument("--file", help="Input JSONL file for review action")
     seeds_parser.add_argument("--approve-all", action="store_true", help="Auto-approve all seeds in review action")
     seeds_parser.add_argument("--output", help="Output JSONL file path")
+    # sample action arguments
+    seeds_parser.add_argument("--from", dest="from_file", help="Source approved.jsonl for sample action")
+    seeds_parser.add_argument("--to", help="Target inbox file for sample action (default: inbox.jsonl)")
+    seeds_parser.add_argument("--count", type=int, help="Number of random seeds to sample")
+    seeds_parser.add_argument("--all", dest="sample_all", action="store_true", help="Sample all seeds (no randomization)")
 
     args = parser.parse_args()
 

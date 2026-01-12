@@ -385,7 +385,8 @@ async def expand_item(
 
     # Run the agent (LangSmith traces automatically when LANGCHAIN_TRACING_V2=true)
     try:
-        result = await graph.ainvoke(initial_state)
+        config = {"run_name": "expand_item", "metadata": {"item_id": item.id}}
+        result = await graph.ainvoke(initial_state, config=config)
         messages = result["messages"]
 
         # Parse expansion from messages

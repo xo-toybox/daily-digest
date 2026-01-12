@@ -52,10 +52,13 @@ def run_expansion_eval(
 
     # Code-based evaluators (always run)
     results["structure"] = structure_evaluator(inputs, outputs)
-    results["sources_retrieved"] = sources_retrieved_evaluator(run, None)
 
+    # Trajectory-dependent evaluators (only when run data available)
+    # Note: sources_retrieved and efficiency require LangSmith run with child_runs
     if run:
+        results["sources_retrieved"] = sources_retrieved_evaluator(run, None)
         results["efficiency"] = efficiency_evaluator(run, None)
+    # Skip these evaluators in local mode - they require trajectory data
 
     # Model-based evaluators (optional, cost API calls)
     if include_model_based:
