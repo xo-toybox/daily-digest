@@ -26,16 +26,16 @@ The agent loops between calling Claude (with tools bound) and executing tool cal
 
 ```bash
 # Add source to inbox
-uv run python -m src.daily_digest.cli add "https://example.com/article" --note "why interesting"
+uv run daily-digest add "https://example.com/article" --note "why interesting"
 
 # Expand all inbox items
-uv run python -m src.daily_digest.cli run
+uv run daily-digest run
 
 # Generate digest from expansions
-uv run python -m src.daily_digest.cli digest
+uv run daily-digest digest
 
 # View topics in archive
-uv run python -m src.daily_digest.cli topics
+uv run daily-digest topics
 
 # Collect seed URLs for eval dataset
 uv run daily-digest seeds collect --categories="agent-evaluation" --target=5 --score --review --output=seeds.jsonl

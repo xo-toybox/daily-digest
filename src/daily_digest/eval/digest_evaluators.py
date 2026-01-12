@@ -43,7 +43,7 @@ Score 1-5:
 1: Connections are trivial or missing"""
         )
     result = _connection_evaluator(inputs=inputs, outputs=outputs)
-    return {"key": "connections", **result}
+    return {**result, "metric_name": "connections"}
 
 
 def actionability_evaluator(inputs: dict, outputs: dict) -> dict:
@@ -61,7 +61,7 @@ Score 1-5:
 1: Too abstract to act on"""
         )
     result = _actionability_evaluator(inputs=inputs, outputs=outputs)
-    return {"key": "actionability", **result}
+    return {**result, "metric_name": "actionability"}
 
 
 def synthesis_evaluator(inputs: dict, outputs: dict) -> dict:
@@ -84,4 +84,4 @@ Is the digest:
 Score 1-5 with explanation."""
         )
     result = _synthesis_evaluator(inputs=inputs, outputs=outputs)
-    return {"key": "synthesis", **result}
+    return {**result, "metric_name": "synthesis"}

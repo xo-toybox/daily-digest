@@ -107,9 +107,10 @@ def run_digest_eval(
 
     # Compute aggregate
     scores = [r.get("score") for r in results.values() if r.get("score") is not None]
+    evaluators_run = len(results)
     results["_aggregate"] = {
         "mean_score": sum(scores) / len(scores) if scores else None,
-        "evaluators_run": len(results) - 1,
+        "evaluators_run": evaluators_run,
     }
 
     return results

@@ -8,6 +8,28 @@ Two categories:
 from typing import Any
 
 
+def _collect_tool_calls_recursive(child_runs: list | None) -> list:
+    """Recursively collect all tool runs from nested child_runs.
+
+    LangGraph nests tool calls inside "tools" chain runs.
+    This function traverses the full tree to find all tool runs.
+    """
+    if not child_runs:
+        return []
+
+    tool_calls = []
+    for run in child_runs:
+        run_type = getattr(run, "run_type", "")
+        if run_type == "tool":
+            tool_calls.append(run)
+        # Recursively search nested children
+        nested = getattr(run, "child_runs", None)
+        if nested:
+            tool_calls.extend(_collect_tool_calls_recursive(nested))
+
+    return tool_calls
+
+
 # ============================================================
 # CODE-BASED EVALUATORS (fast, objective, run first)
 # ============================================================
@@ -36,15 +58,26 @@ def efficiency_evaluator(run: Any, example: Any) -> dict:
     """Evaluate agent tool usage efficiency.
 
     Checks for redundant tool calls (e.g., fetching same URL twice).
+    Returns 0.5 (neutral) when no tool calls are made.
     """
-    # Access child runs for tool calls
-    tool_calls = []
-    if hasattr(run, "child_runs"):
-        tool_calls = [c for c in run.child_runs if c.run_type == "tool"]
+    # Recursively collect tool calls (handles LangGraph nested structures)
+    child_runs = getattr(run, "child_runs", None)
+    tool_calls = _collect_tool_calls_recursive(child_runs)
 
     turns_used = 0
     if hasattr(run, "outputs") and run.outputs:
         turns_used = run.outputs.get("turn_count", 0)
+
+    # Return neutral score if no tool calls
+    if not tool_calls:
+        return {
+            "metric_name": "efficiency",
+            "score": 0.5,
+            "tool_calls": 0,
+            "turns_used": turns_used,
+            "redundant": 0,
+            "efficient": turns_used <= 8,
+        }
 
     # Check for redundant patterns
     redundant = 0
@@ -65,10 +98,9 @@ def efficiency_evaluator(run: Any, example: Any) -> dict:
                 redundant += 1
             urls_fetched.add(url)
 
-    total_calls = max(len(tool_calls), 1)
     return {
         "metric_name": "efficiency",
-        "score": 1 - (redundant / total_calls),
+        "score": 1 - (redundant / len(tool_calls)),
         "tool_calls": len(tool_calls),
         "turns_used": turns_used,
         "redundant": redundant,
@@ -78,9 +110,9 @@ def efficiency_evaluator(run: Any, example: Any) -> dict:
 
 def sources_retrieved_evaluator(run: Any, example: Any) -> dict:
     """Binary check: did agent retrieve any sources?"""
-    tool_calls = []
-    if hasattr(run, "child_runs"):
-        tool_calls = [c for c in run.child_runs if c.run_type == "tool"]
+    # Recursively collect tool calls (handles LangGraph nested structures)
+    child_runs = getattr(run, "child_runs", None)
+    tool_calls = _collect_tool_calls_recursive(child_runs)
 
     fetch_tools = {"fetch_url", "fetch_tweet", "web_search", "github_repo"}
     retrieved = any(

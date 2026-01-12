@@ -97,4 +97,4 @@ def print_tracing_status() -> None:
     print(f"API Key: {'configured' if api_key else 'not set'}")
 
     if enabled and api_key:
-        print(f"Dashboard: https://smith.langchain.com/o/default/projects/p/{project}")
+        print(f"Dashboard: https://smith.langchain.com (project: {project})")

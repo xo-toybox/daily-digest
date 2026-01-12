@@ -214,6 +214,7 @@ def import_dataset_from_jsonl(dataset_name: str, input_path: Path) -> int:
         return 0
 
     count = 0
+    error = None
     try:
         with input_path.open() as f:
             for line in f:
@@ -227,6 +228,10 @@ def import_dataset_from_jsonl(dataset_name: str, input_path: Path) -> int:
                     metadata=record.get("metadata", {}),
                 )
                 count += 1
-        return count
-    except Exception:
-        return count
+    except Exception as e:
+        error = str(e)
+
+    if error:
+        raise RuntimeError(f"Import failed after {count} examples: {error}")
+
+    return count

@@ -395,13 +395,14 @@ async def expand_item(
         if expansion:
             return expansion
 
-    except Exception:
-        pass  # Errors are captured in LangSmith traces
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"expand_item failed for {item.id}: {e}")
 
     # Fallback if we couldn't parse proper output
     return Expansion(
         item_id=item.id,
-        source_summary="Expansion incomplete - agent did not produce structured output",
+        source_summary="Expansion incomplete - agent error or no structured output",
         key_points=[],
         related=[],
         assessment="Unable to complete expansion",
