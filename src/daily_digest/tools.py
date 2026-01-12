@@ -12,7 +12,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 USER_AGENT = "daily-digest/0.1 (research agent)"
 FETCH_CACHE_DIR = Path("fetch_cache")

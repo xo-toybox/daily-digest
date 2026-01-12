@@ -1,3 +1,10 @@
+# secrets
+.env
+# runtime files
+expanded
+archive
+fetch_cache
+
 # Python-generated files
 __pycache__/
 *.py[oc]

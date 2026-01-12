@@ -3,6 +3,7 @@
 from datetime import datetime
 
 import anthropic
+from langsmith import traceable
 
 from .models import Digest, DigestEntry, Expansion, InboxItem
 
@@ -56,6 +57,7 @@ def generate_digest_markdown(digest: Digest, items: dict[str, InboxItem]) -> str
     return "\n".join(lines)
 
 
+@traceable(name="create_digest", run_type="chain", tags=["digest"])
 async def create_digest(
     expansions: list[Expansion], items: dict[str, InboxItem]
 ) -> Digest:

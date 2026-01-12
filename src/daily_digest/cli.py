@@ -7,11 +7,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 
+# Load .env file if present (for LANGCHAIN_API_KEY, etc.)
+load_dotenv()
+
 from .agent import expand_item
-from .trajectory import TrajectoryLogger
 from .archive import (
     archive_and_cleanup,
     find_related_expansions,
@@ -19,7 +22,18 @@ from .archive import (
     list_topics,
 )
 from .digest import create_digest, generate_digest_markdown
+from .eval.runner import run_expansion_eval, format_eval_results
+from .eval.datasets import list_datasets, export_dataset_to_jsonl, import_dataset_from_jsonl
+from .eval.seed_collector import (
+    list_categories,
+    get_category_info,
+    validate_url,
+    collect_seeds,
+    export_seeds_to_jsonl,
+    score_seed_quality,
+)
 from .models import Expansion, InboxItem, ItemType
+from .tracing import export_recent_traces, print_tracing_status
 
 console = Console()
 
@@ -165,10 +179,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
         console.print("[green]All items already processed.[/green]")
         return
 
-    # Initialize trajectory logger
-    trajectory = TrajectoryLogger()
-    console.print(f"[dim]Trajectory run ID: {trajectory.run_id}[/dim]")
-
     # Load known topics from archive for consistency
     known_topics = list_topics(DEFAULT_ARCHIVE)
     if known_topics:
@@ -208,7 +218,6 @@ async def cmd_run(args: argparse.Namespace) -> None:
                 prior_context=prior_context,
                 known_topics=known_topics,
                 local_content=local_content,
-                trajectory_logger=trajectory,
                 world_view=world_view_context,
             )
             path = save_expansion(expansion, DEFAULT_EXPANDED)
@@ -225,12 +234,10 @@ async def cmd_run(args: argparse.Namespace) -> None:
             console.print()
 
         except Exception as e:
-            trajectory.log_error(item.id, str(e))
             console.print(f"[red]Error processing {item.id}: {e}[/red]")
 
-    # Save trajectory
-    trajectory_path = trajectory.save()
-    console.print(f"\n[dim]Trajectory saved to {trajectory_path}[/dim]")
+    # Tracing handled by LangSmith when LANGCHAIN_TRACING_V2=true
+    console.print("\n[dim]Traces available in LangSmith (if configured)[/dim]")
 
 
 async def cmd_digest(args: argparse.Namespace) -> None:
@@ -311,6 +318,489 @@ async def cmd_topics(args: argparse.Namespace) -> None:
             console.print(f"    [dim]... and {len(expansions) - 3} more[/dim]")
 
 
+async def cmd_traces(args: argparse.Namespace) -> None:
+    """Show tracing status or export traces."""
+    if args.export:
+        console.print(f"[bold]Exporting last {args.limit} traces...[/bold]")
+        paths = export_recent_traces(limit=args.limit)
+        if paths:
+            console.print(f"[green]Exported {len(paths)} trace(s):[/green]")
+            for p in paths:
+                console.print(f"  {p}")
+        else:
+            console.print("[yellow]No traces exported. Check LANGCHAIN_API_KEY is set.[/yellow]")
+    else:
+        print_tracing_status()
+
+
+async def cmd_eval(args: argparse.Namespace) -> None:
+    """Run evaluators on expansions or LangSmith traces."""
+    import os
+
+    # Disable tracing for evaluator calls by default to avoid burning quota
+    # Support both old (LANGCHAIN_TRACING_V2) and new (LANGSMITH_TRACING) env vars
+    original_v2 = os.environ.get("LANGCHAIN_TRACING_V2")
+    original_new = os.environ.get("LANGSMITH_TRACING")
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    os.environ["LANGSMITH_TRACING"] = "false"
+
+    try:
+        await _run_eval(args)
+    finally:
+        # Restore original tracing settings
+        if original_v2:
+            os.environ["LANGCHAIN_TRACING_V2"] = original_v2
+        elif "LANGCHAIN_TRACING_V2" in os.environ:
+            del os.environ["LANGCHAIN_TRACING_V2"]
+        if original_new:
+            os.environ["LANGSMITH_TRACING"] = original_new
+        elif "LANGSMITH_TRACING" in os.environ:
+            del os.environ["LANGSMITH_TRACING"]
+
+
+async def _run_eval(args: argparse.Namespace) -> None:
+    """Internal eval implementation."""
+    # LangSmith experiment evaluation mode
+    if args.experiment:
+        from .eval.langsmith_runner import run_langsmith_eval
+
+        console.print(f"[bold]Evaluating LangSmith experiment: {args.experiment}[/bold]\n")
+
+        try:
+            results = run_langsmith_eval(
+                experiment_name=args.experiment,
+                include_trajectory=args.trajectory,
+                include_model_based=args.model_based,
+            )
+            console.print("[green]Evaluation complete![/green]")
+            console.print(f"  Evaluators run: {results['evaluators_run']}")
+            console.print("  Results: View in LangSmith dashboard")
+            console.print(f"  https://smith.langchain.com")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Recent traced runs evaluation mode
+    if args.recent:
+        from .eval.langsmith_runner import evaluate_recent_runs, format_recent_eval_results
+
+        console.print(f"[bold]Evaluating {args.limit} recent runs...[/bold]\n")
+
+        try:
+            results = evaluate_recent_runs(
+                limit=args.limit,
+                include_trajectory=args.trajectory,
+                include_model_based=args.model_based,
+            )
+            console.print(format_recent_eval_results(results))
+
+            if args.trajectory:
+                console.print("\n[dim]Trajectory evaluators ran (costs API calls).[/dim]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Pass@k variance testing mode
+    if args.pass_at_k:
+        from .eval.pass_at_k import eval_pass_at_k, format_pass_at_k_results
+        from .agent import expand_item
+
+        k = args.pass_at_k
+        threshold = args.threshold
+
+        # Get first pending inbox item or use --id to specify
+        inbox = load_inbox(DEFAULT_INBOX)
+        if args.id:
+            # Find specific item
+            item = next((i for i in inbox if i.id == args.id), None)
+            if not item:
+                console.print(f"[red]Item {args.id} not found in inbox[/red]")
+                return
+        elif inbox:
+            item = inbox[0]
+        else:
+            console.print("[yellow]No inbox items. Add one with 'daily-digest add'[/yellow]")
+            return
+
+        console.print(f"[bold]Running pass@{k} variance test[/bold]")
+        console.print(f"  Item: {item.content[:60]}...")
+        console.print(f"  Threshold: {threshold}")
+        console.print()
+
+        try:
+            results = await eval_pass_at_k(
+                item=item,
+                expand_fn=expand_item,
+                k=k,
+                threshold=threshold,
+                include_model_based=args.model_based,
+            )
+            console.print(format_pass_at_k_results(results))
+
+            # Check exit criteria
+            if results.get("variance", 1.0) < 0.2:
+                console.print("\n[green]✓ Variance < 0.2 - meets exit criteria[/green]")
+            else:
+                console.print("\n[yellow]⚠ Variance >= 0.2 - does not meet exit criteria[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Local evaluation mode (original behavior)
+    expansions = load_expansions(DEFAULT_EXPANDED)
+    if not expansions:
+        console.print("[yellow]No expansions found. Run 'daily-digest run' first.[/yellow]")
+        return
+
+    # Filter by ID if specified
+    if args.id:
+        expansions = [e for e in expansions if e.item_id == args.id]
+        if not expansions:
+            console.print(f"[red]Expansion {args.id} not found.[/red]")
+            return
+
+    console.print(f"[bold]Evaluating {len(expansions)} expansion(s)...[/bold]\n")
+
+    for expansion in expansions:
+        console.print(Panel(f"[bold]{expansion.item_id}[/bold]", title="Evaluation"))
+
+        results = run_expansion_eval(
+            expansion,
+            include_model_based=args.model_based,
+        )
+
+        console.print(format_eval_results(results))
+        console.print()
+
+    if args.model_based:
+        console.print("[dim]Model-based evaluators ran (costs API calls).[/dim]")
+    else:
+        console.print("[dim]Use --model-based for LLM-as-judge, --recent for traced runs, --trajectory for agent behavior.[/dim]")
+
+
+async def cmd_dataset(args: argparse.Namespace) -> None:
+    """Manage LangSmith datasets."""
+    if args.action == "list":
+        datasets = list_datasets()
+        if not datasets:
+            console.print("[yellow]No datasets found. Check LANGCHAIN_API_KEY is set.[/yellow]")
+            return
+
+        console.print(f"[bold]Datasets ({len(datasets)}):[/bold]\n")
+        for ds in datasets:
+            console.print(f"  [cyan]{ds['name']}[/cyan] ({ds['example_count']} examples)")
+            if ds.get("description"):
+                console.print(f"    [dim]{ds['description']}[/dim]")
+
+    elif args.action == "export":
+        if not args.name:
+            console.print("[red]--name required for export[/red]")
+            return
+        output = Path(args.output or f"{args.name}.jsonl")
+        count = export_dataset_to_jsonl(args.name, output)
+        if count:
+            console.print(f"[green]Exported {count} examples to {output}[/green]")
+        else:
+            console.print("[red]Export failed. Check dataset name and API key.[/red]")
+
+    elif args.action == "import":
+        if not args.name or not args.file:
+            console.print("[red]--name and --file required for import[/red]")
+            return
+        input_path = Path(args.file)
+        if not input_path.exists():
+            console.print(f"[red]File not found: {args.file}[/red]")
+            return
+        count = import_dataset_from_jsonl(args.name, input_path)
+        if count:
+            console.print(f"[green]Imported {count} examples to {args.name}[/green]")
+        else:
+            console.print("[red]Import failed. Check dataset exists and API key.[/red]")
+
+
+async def cmd_seeds(args: argparse.Namespace) -> None:
+    """Manage seed input collection for eval datasets."""
+    if args.action == "categories":
+        # List topic categories
+        layer = args.layer
+        categories = list_categories(layer)
+
+        if layer:
+            console.print(f"[bold]Categories ({layer} layer):[/bold]\n")
+        else:
+            console.print("[bold]All topic categories:[/bold]\n")
+
+        for cat in sorted(categories):
+            info = get_category_info(cat)
+            if info:
+                console.print(f"  [cyan]{cat}[/cyan] ({info.get('layer', 'unknown')})")
+                console.print(f"    [dim]{info.get('description', '')}[/dim]")
+
+    elif args.action == "validate":
+        # Validate a single URL
+        if not args.url:
+            console.print("[red]--url required for validate[/red]")
+            return
+
+        console.print(f"[bold]Validating:[/bold] {args.url}\n")
+        result = await validate_url(args.url)
+
+        if result["valid"]:
+            console.print(f"[green]Valid[/green]")
+            console.print(f"  normalized: {result['normalized_url']}")
+        else:
+            console.print(f"[red]Invalid[/red]: {result['reason']}")
+
+    elif args.action == "review":
+        # Interactive or batch review of collected seeds
+        if not args.file:
+            console.print("[red]--file required for review (path to seeds JSONL)[/red]")
+            return
+
+        input_path = Path(args.file)
+        if not input_path.exists():
+            console.print(f"[red]File not found: {args.file}[/red]")
+            return
+
+        # Load seeds
+        seeds = []
+        with input_path.open() as f:
+            for line in f:
+                if line.strip():
+                    seeds.append(json.loads(line))
+
+        if not seeds:
+            console.print("[yellow]No seeds found in file.[/yellow]")
+            return
+
+        # Batch mode: auto-approve all (useful for quick export after collection)
+        if args.approve_all:
+            console.print(f"[bold]Auto-approving {len(seeds)} seeds[/bold]")
+            if args.output:
+                output_path = Path(args.output)
+                count = export_seeds_to_jsonl(seeds, output_path)
+                console.print(f"[green]Exported {count} seeds to {output_path}[/green]")
+            else:
+                console.print("[yellow]Use --output to export approved seeds[/yellow]")
+            return
+
+        # Interactive mode
+        console.print(f"[bold]Reviewing {len(seeds)} seeds from {input_path}[/bold]\n")
+        console.print("[dim]Commands: (a)pprove, (r)eject, (s)kip, (q)uit, (A)pprove-all-remaining[/dim]\n")
+
+        approved = []
+        rejected = []
+        skipped = []
+
+        i = 0
+        while i < len(seeds):
+            seed = seeds[i]
+            i += 1
+            console.print(f"[bold][{i}/{len(seeds)}][/bold] {seed.get('category', 'unknown')}")
+            console.print(f"  URL: [cyan]{seed['content']}[/cyan]")
+            if seed.get('note'):
+                console.print(f"  Note: {seed['note']}")
+            if seed.get('quality_score'):
+                console.print(f"  Score: {seed['quality_score']}")
+
+            while True:
+                response = console.input("  Decision [a/r/s/q/A]: ").strip()
+                if response in ('a', 'approve'):
+                    approved.append(seed)
+                    console.print("  [green]Approved[/green]\n")
+                    break
+                elif response in ('r', 'reject'):
+                    rejected.append(seed)
+                    console.print("  [red]Rejected[/red]\n")
+                    break
+                elif response in ('s', 'skip'):
+                    skipped.append(seed)
+                    console.print("  [yellow]Skipped[/yellow]\n")
+                    break
+                elif response in ('q', 'quit'):
+                    console.print("\n[dim]Review cancelled.[/dim]")
+                    return
+                elif response == 'A':
+                    # Approve all remaining including current
+                    approved.append(seed)
+                    approved.extend(seeds[i:])
+                    console.print(f"  [green]Approved all {len(seeds) - i + 1} remaining[/green]\n")
+                    i = len(seeds)
+                    break
+                else:
+                    console.print("  [dim]Invalid choice. Use a/r/s/q/A[/dim]")
+
+        # Summary
+        console.print(f"\n[bold]Review complete:[/bold]")
+        console.print(f"  Approved: {len(approved)}")
+        console.print(f"  Rejected: {len(rejected)}")
+        console.print(f"  Skipped: {len(skipped)}")
+
+        # Export approved if output specified
+        if args.output and approved:
+            output_path = Path(args.output)
+            count = export_seeds_to_jsonl(approved, output_path)
+            console.print(f"\n[green]Exported {count} approved seeds to {output_path}[/green]")
+
+    elif args.action == "collect":
+        # Collect seeds for categories
+        categories = args.categories.split(",") if args.categories else None
+        target = args.target or 8
+
+        if categories:
+            console.print(f"[bold]Collecting seeds for: {', '.join(categories)}[/bold]\n")
+        else:
+            console.print("[bold]Collecting seeds for all categories[/bold]\n")
+
+        results = await collect_seeds(
+            categories=categories,
+            target_per_category=target,
+            validate=not args.no_validate,
+        )
+
+        # Score seeds if requested
+        if args.score:
+            console.print("[bold]Scoring seeds with AI...[/bold]\n")
+            for cat, seeds in results.items():
+                for seed in seeds:
+                    try:
+                        score_result = score_seed_quality(
+                            url=seed["url"],
+                            metadata=seed.get("title", ""),
+                            category=cat,
+                        )
+                        seed["quality_score"] = score_result.get("score")
+                        seed["score_reasoning"] = score_result.get("comment", "")
+                    except Exception as e:
+                        console.print(f"[dim]  Scoring error for {seed['url'][:50]}: {e}[/dim]")
+                        seed["quality_score"] = None
+
+        # Summary
+        total_seeds = sum(len(seeds) for seeds in results.values())
+        console.print(f"\n[bold]Collection complete:[/bold]")
+        console.print(f"  Categories: {len(results)}")
+        console.print(f"  Total seeds: {total_seeds}\n")
+
+        for cat, seeds in results.items():
+            if seeds:
+                console.print(f"[cyan]{cat}[/cyan] ({len(seeds)} seeds):")
+                for seed in seeds[:5]:  # Show first 5
+                    score_str = f" [score: {seed.get('quality_score', '?')}]" if args.score else ""
+                    console.print(f"  - {seed['url']}{score_str}")
+                if len(seeds) > 5:
+                    console.print(f"  [dim]... and {len(seeds) - 5} more[/dim]")
+            else:
+                console.print(f"[yellow]{cat}[/yellow]: no seeds collected")
+
+        # Interactive review if requested
+        all_seeds = [s for seeds in results.values() for s in seeds]
+
+        if args.review and all_seeds:
+            console.print(f"\n[bold]Starting interactive review of {len(all_seeds)} seeds[/bold]")
+            console.print("[dim]Commands: (a)pprove, (r)eject, (s)kip, (q)uit, (A)pprove-all-remaining[/dim]\n")
+
+            approved = []
+            rejected = []
+
+            i = 0
+            while i < len(all_seeds):
+                seed = all_seeds[i]
+                i += 1
+                console.print(f"[bold][{i}/{len(all_seeds)}][/bold] {seed.get('category', 'unknown')}")
+                console.print(f"  URL: [cyan]{seed['url']}[/cyan]")
+                if seed.get('title'):
+                    console.print(f"  Title: {seed['title']}")
+                if seed.get('relevance'):
+                    console.print(f"  Relevance: {seed['relevance'][:100]}...")
+                if seed.get('quality_score'):
+                    console.print(f"  Score: {seed['quality_score']}")
+
+                while True:
+                    response = console.input("  Decision [a/r/s/q/A]: ").strip()
+                    if response in ('a', 'approve'):
+                        approved.append(seed)
+                        console.print("  [green]Approved[/green]\n")
+                        break
+                    elif response in ('r', 'reject'):
+                        rejected.append(seed)
+                        console.print("  [red]Rejected[/red]\n")
+                        break
+                    elif response in ('s', 'skip'):
+                        console.print("  [yellow]Skipped[/yellow]\n")
+                        break
+                    elif response in ('q', 'quit'):
+                        console.print("\n[dim]Review cancelled.[/dim]")
+                        return
+                    elif response == 'A':
+                        approved.append(seed)
+                        approved.extend(all_seeds[i:])
+                        console.print(f"  [green]Approved all {len(all_seeds) - i + 1} remaining[/green]\n")
+                        i = len(all_seeds)
+                        break
+                    else:
+                        console.print("  [dim]Invalid choice. Use a/r/s/q/A[/dim]")
+
+            console.print(f"\n[bold]Review complete:[/bold]")
+            console.print(f"  Approved: {len(approved)}")
+            console.print(f"  Rejected: {len(rejected)}")
+
+            # Export approved seeds
+            if args.output and approved:
+                output_path = Path(args.output)
+                count = export_seeds_to_jsonl(approved, output_path)
+                console.print(f"\n[green]Exported {count} approved seeds to {output_path}[/green]")
+            elif not args.output and approved:
+                console.print("[yellow]Use --output to export approved seeds[/yellow]")
+
+        # Export without review if output specified but no review
+        elif args.output:
+            output_path = Path(args.output)
+            count = export_seeds_to_jsonl(all_seeds, output_path)
+            console.print(f"\n[green]Exported {count} seeds to {output_path}[/green]")
+
+    elif args.action == "sample":
+        # Sample approved seeds into inbox format
+        if not args.from_file:
+            console.print("[red]--from required for sample action[/red]")
+            return
+
+        from_path = Path(args.from_file)
+        if not from_path.exists():
+            console.print(f"[red]File not found: {args.from_file}[/red]")
+            return
+
+        # Read approved seeds
+        seeds = []
+        with from_path.open() as f:
+            for line in f:
+                if line.strip():
+                    seeds.append(json.loads(line))
+
+        if not seeds:
+            console.print("[yellow]No seeds found in file.[/yellow]")
+            return
+
+        # Sample or take all
+        if args.count and args.count < len(seeds):
+            import random
+            seeds = random.sample(seeds, args.count)
+        elif not args.sample_all and not args.count:
+            console.print("[red]Specify --count N or --all[/red]")
+            return
+
+        # Convert to InboxItem format and append to target
+        to_path = Path(args.to or "inbox.jsonl")
+        with to_path.open("a") as f:
+            for seed in seeds:
+                item = InboxItem.from_url(
+                    url=seed["content"],
+                    note=seed.get("note"),
+                )
+                f.write(item.model_dump_json() + "\n")
+
+        console.print(f"[green]Sampled {len(seeds)} seeds to {to_path}[/green]")
+
+
 def main() -> None:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(
@@ -338,6 +828,48 @@ def main() -> None:
     # topics command
     topics_parser = subparsers.add_parser("topics", help="Show archive topics")
 
+    # traces command
+    traces_parser = subparsers.add_parser("traces", help="Show tracing status or export traces")
+    traces_parser.add_argument("--export", action="store_true", help="Export recent traces to local JSON")
+    traces_parser.add_argument("--limit", type=int, default=10, help="Number of traces to export (default: 10)")
+
+    # eval command
+    eval_parser = subparsers.add_parser("eval", help="Run evaluators on expansions or traces")
+    eval_parser.add_argument("--id", help="Evaluate specific expansion by ID (local mode)")
+    eval_parser.add_argument("--model-based", action="store_true", help="Run LLM-as-judge evaluators (costs API calls)")
+    eval_parser.add_argument("--experiment", help="LangSmith experiment name to evaluate (dashboard mode)")
+    eval_parser.add_argument("--recent", action="store_true", help="Evaluate recent traced runs")
+    eval_parser.add_argument("--limit", type=int, default=10, help="Number of recent runs to evaluate (default: 10)")
+    eval_parser.add_argument("--trajectory", action="store_true", help="Include trajectory evaluators from agentevals")
+    eval_parser.add_argument("--pass-at-k", type=int, metavar="K", help="Run pass@k variance test (runs expansion K times)")
+    eval_parser.add_argument("--threshold", type=float, default=0.7, help="Score threshold for pass@k (default: 0.7)")
+
+    # dataset command
+    dataset_parser = subparsers.add_parser("dataset", help="Manage LangSmith datasets")
+    dataset_parser.add_argument("action", choices=["list", "export", "import"], help="Action to perform")
+    dataset_parser.add_argument("--name", help="Dataset name")
+    dataset_parser.add_argument("--file", help="JSONL file for import")
+    dataset_parser.add_argument("--output", help="Output path for export")
+
+    # seeds command
+    seeds_parser = subparsers.add_parser("seeds", help="Manage seed input collection")
+    seeds_parser.add_argument("action", choices=["categories", "validate", "collect", "review", "sample"], help="Action to perform")
+    seeds_parser.add_argument("--layer", choices=["engineering", "product", "research"], help="Filter by layer")
+    seeds_parser.add_argument("--url", help="URL to validate")
+    seeds_parser.add_argument("--categories", help="Comma-separated category names for collect")
+    seeds_parser.add_argument("--target", type=int, help="Target seeds per category (default: 8)")
+    seeds_parser.add_argument("--no-validate", action="store_true", help="Skip URL validation")
+    seeds_parser.add_argument("--score", action="store_true", help="Score seeds with AI quality scorer")
+    seeds_parser.add_argument("--review", action="store_true", help="Interactive review after collection")
+    seeds_parser.add_argument("--file", help="Input JSONL file for review action")
+    seeds_parser.add_argument("--approve-all", action="store_true", help="Auto-approve all seeds in review action")
+    seeds_parser.add_argument("--output", help="Output JSONL file path")
+    # sample action arguments
+    seeds_parser.add_argument("--from", dest="from_file", help="Source approved.jsonl for sample action")
+    seeds_parser.add_argument("--to", help="Target inbox file for sample action (default: inbox.jsonl)")
+    seeds_parser.add_argument("--count", type=int, help="Number of random seeds to sample")
+    seeds_parser.add_argument("--all", dest="sample_all", action="store_true", help="Sample all seeds (no randomization)")
+
     args = parser.parse_args()
 
     # Run async command
@@ -351,6 +883,14 @@ def main() -> None:
         asyncio.run(cmd_show(args))
     elif args.command == "topics":
         asyncio.run(cmd_topics(args))
+    elif args.command == "traces":
+        asyncio.run(cmd_traces(args))
+    elif args.command == "eval":
+        asyncio.run(cmd_eval(args))
+    elif args.command == "dataset":
+        asyncio.run(cmd_dataset(args))
+    elif args.command == "seeds":
+        asyncio.run(cmd_seeds(args))
 
 
 if __name__ == "__main__":
