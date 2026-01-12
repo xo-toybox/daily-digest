@@ -94,6 +94,39 @@ Review a previously collected file:
 daily-digest seeds review --file=raw.jsonl --output=approved.jsonl
 ```
 
+### Evaluation
+
+The `eval` command runs evaluators against agent traces to measure expansion quality.
+
+```bash
+# Evaluate recent LangSmith traces (code-based evaluators)
+daily-digest eval --recent --limit 10
+
+# Include trajectory analysis (agent behavior)
+daily-digest eval --recent --trajectory
+
+# Include model-based evaluators (LLM-as-judge)
+daily-digest eval --recent --model-based
+
+# Run pass@k variance test
+daily-digest eval --pass-at-k 3 --threshold 0.7
+```
+
+**Evaluators:**
+
+| Category | Evaluator | What it measures |
+|----------|-----------|------------------|
+| Code-based | `structure` | Required output fields present |
+| Code-based | `efficiency` | No redundant tool calls |
+| Code-based | `sources_retrieved` | Agent fetched sources |
+| Model-based | `groundedness` | Claims traceable to sources |
+| Model-based | `coverage` | Captures essential insights |
+| Model-based | `authority` | Sources are authoritative |
+| Model-based | `topic_quality` | Semantic groupings vs keywords |
+| Trajectory | `trajectory_tool_efficiency` | Optimal tool usage |
+| Trajectory | `trajectory_reasoning` | Search strategy quality |
+| Trajectory | `trajectory_goal_completion` | Agent achieved goal |
+
 ## Structure
 
 ```
