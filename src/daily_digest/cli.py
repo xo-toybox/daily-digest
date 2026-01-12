@@ -24,7 +24,14 @@ from .archive import (
 from .digest import create_digest, generate_digest_markdown
 from .eval.runner import run_expansion_eval, format_eval_results
 from .eval.datasets import list_datasets, export_dataset_to_jsonl, import_dataset_from_jsonl
-from .eval.seed_collector import list_categories, get_category_info, validate_url
+from .eval.seed_collector import (
+    list_categories,
+    get_category_info,
+    validate_url,
+    collect_seeds,
+    export_seeds_to_jsonl,
+    score_seed_quality,
+)
 from .models import Expansion, InboxItem, ItemType
 from .tracing import export_recent_traces, print_tracing_status
 
@@ -432,6 +439,213 @@ async def cmd_seeds(args: argparse.Namespace) -> None:
         else:
             console.print(f"[red]Invalid[/red]: {result['reason']}")
 
+    elif args.action == "review":
+        # Interactive or batch review of collected seeds
+        if not args.file:
+            console.print("[red]--file required for review (path to seeds JSONL)[/red]")
+            return
+
+        input_path = Path(args.file)
+        if not input_path.exists():
+            console.print(f"[red]File not found: {args.file}[/red]")
+            return
+
+        # Load seeds
+        seeds = []
+        with input_path.open() as f:
+            for line in f:
+                if line.strip():
+                    seeds.append(json.loads(line))
+
+        if not seeds:
+            console.print("[yellow]No seeds found in file.[/yellow]")
+            return
+
+        # Batch mode: auto-approve all (useful for quick export after collection)
+        if args.approve_all:
+            console.print(f"[bold]Auto-approving {len(seeds)} seeds[/bold]")
+            if args.output:
+                output_path = Path(args.output)
+                count = export_seeds_to_jsonl(seeds, output_path)
+                console.print(f"[green]Exported {count} seeds to {output_path}[/green]")
+            else:
+                console.print("[yellow]Use --output to export approved seeds[/yellow]")
+            return
+
+        # Interactive mode
+        console.print(f"[bold]Reviewing {len(seeds)} seeds from {input_path}[/bold]\n")
+        console.print("[dim]Commands: (a)pprove, (r)eject, (s)kip, (q)uit, (A)pprove-all-remaining[/dim]\n")
+
+        approved = []
+        rejected = []
+        skipped = []
+
+        i = 0
+        while i < len(seeds):
+            seed = seeds[i]
+            i += 1
+            console.print(f"[bold][{i}/{len(seeds)}][/bold] {seed.get('category', 'unknown')}")
+            console.print(f"  URL: [cyan]{seed['content']}[/cyan]")
+            if seed.get('note'):
+                console.print(f"  Note: {seed['note']}")
+            if seed.get('quality_score'):
+                console.print(f"  Score: {seed['quality_score']}")
+
+            while True:
+                response = console.input("  Decision [a/r/s/q/A]: ").strip()
+                if response in ('a', 'approve'):
+                    approved.append(seed)
+                    console.print("  [green]Approved[/green]\n")
+                    break
+                elif response in ('r', 'reject'):
+                    rejected.append(seed)
+                    console.print("  [red]Rejected[/red]\n")
+                    break
+                elif response in ('s', 'skip'):
+                    skipped.append(seed)
+                    console.print("  [yellow]Skipped[/yellow]\n")
+                    break
+                elif response in ('q', 'quit'):
+                    console.print("\n[dim]Review cancelled.[/dim]")
+                    return
+                elif response == 'A':
+                    # Approve all remaining including current
+                    approved.append(seed)
+                    approved.extend(seeds[i:])
+                    console.print(f"  [green]Approved all {len(seeds) - i + 1} remaining[/green]\n")
+                    i = len(seeds)
+                    break
+                else:
+                    console.print("  [dim]Invalid choice. Use a/r/s/q/A[/dim]")
+
+        # Summary
+        console.print(f"\n[bold]Review complete:[/bold]")
+        console.print(f"  Approved: {len(approved)}")
+        console.print(f"  Rejected: {len(rejected)}")
+        console.print(f"  Skipped: {len(skipped)}")
+
+        # Export approved if output specified
+        if args.output and approved:
+            output_path = Path(args.output)
+            count = export_seeds_to_jsonl(approved, output_path)
+            console.print(f"\n[green]Exported {count} approved seeds to {output_path}[/green]")
+
+    elif args.action == "collect":
+        # Collect seeds for categories
+        categories = args.categories.split(",") if args.categories else None
+        target = args.target or 8
+
+        if categories:
+            console.print(f"[bold]Collecting seeds for: {', '.join(categories)}[/bold]\n")
+        else:
+            console.print("[bold]Collecting seeds for all categories[/bold]\n")
+
+        results = await collect_seeds(
+            categories=categories,
+            target_per_category=target,
+            validate=not args.no_validate,
+        )
+
+        # Score seeds if requested
+        if args.score:
+            console.print("[bold]Scoring seeds with AI...[/bold]\n")
+            for cat, seeds in results.items():
+                for seed in seeds:
+                    try:
+                        score_result = score_seed_quality(
+                            url=seed["url"],
+                            metadata=seed.get("title", ""),
+                            category=cat,
+                        )
+                        seed["quality_score"] = score_result.get("score")
+                        seed["score_reasoning"] = score_result.get("comment", "")
+                    except Exception as e:
+                        console.print(f"[dim]  Scoring error for {seed['url'][:50]}: {e}[/dim]")
+                        seed["quality_score"] = None
+
+        # Summary
+        total_seeds = sum(len(seeds) for seeds in results.values())
+        console.print(f"\n[bold]Collection complete:[/bold]")
+        console.print(f"  Categories: {len(results)}")
+        console.print(f"  Total seeds: {total_seeds}\n")
+
+        for cat, seeds in results.items():
+            if seeds:
+                console.print(f"[cyan]{cat}[/cyan] ({len(seeds)} seeds):")
+                for seed in seeds[:5]:  # Show first 5
+                    score_str = f" [score: {seed.get('quality_score', '?')}]" if args.score else ""
+                    console.print(f"  - {seed['url']}{score_str}")
+                if len(seeds) > 5:
+                    console.print(f"  [dim]... and {len(seeds) - 5} more[/dim]")
+            else:
+                console.print(f"[yellow]{cat}[/yellow]: no seeds collected")
+
+        # Interactive review if requested
+        all_seeds = [s for seeds in results.values() for s in seeds]
+
+        if args.review and all_seeds:
+            console.print(f"\n[bold]Starting interactive review of {len(all_seeds)} seeds[/bold]")
+            console.print("[dim]Commands: (a)pprove, (r)eject, (s)kip, (q)uit, (A)pprove-all-remaining[/dim]\n")
+
+            approved = []
+            rejected = []
+
+            i = 0
+            while i < len(all_seeds):
+                seed = all_seeds[i]
+                i += 1
+                console.print(f"[bold][{i}/{len(all_seeds)}][/bold] {seed.get('category', 'unknown')}")
+                console.print(f"  URL: [cyan]{seed['url']}[/cyan]")
+                if seed.get('title'):
+                    console.print(f"  Title: {seed['title']}")
+                if seed.get('relevance'):
+                    console.print(f"  Relevance: {seed['relevance'][:100]}...")
+                if seed.get('quality_score'):
+                    console.print(f"  Score: {seed['quality_score']}")
+
+                while True:
+                    response = console.input("  Decision [a/r/s/q/A]: ").strip()
+                    if response in ('a', 'approve'):
+                        approved.append(seed)
+                        console.print("  [green]Approved[/green]\n")
+                        break
+                    elif response in ('r', 'reject'):
+                        rejected.append(seed)
+                        console.print("  [red]Rejected[/red]\n")
+                        break
+                    elif response in ('s', 'skip'):
+                        console.print("  [yellow]Skipped[/yellow]\n")
+                        break
+                    elif response in ('q', 'quit'):
+                        console.print("\n[dim]Review cancelled.[/dim]")
+                        return
+                    elif response == 'A':
+                        approved.append(seed)
+                        approved.extend(all_seeds[i:])
+                        console.print(f"  [green]Approved all {len(all_seeds) - i + 1} remaining[/green]\n")
+                        i = len(all_seeds)
+                        break
+                    else:
+                        console.print("  [dim]Invalid choice. Use a/r/s/q/A[/dim]")
+
+            console.print(f"\n[bold]Review complete:[/bold]")
+            console.print(f"  Approved: {len(approved)}")
+            console.print(f"  Rejected: {len(rejected)}")
+
+            # Export approved seeds
+            if args.output and approved:
+                output_path = Path(args.output)
+                count = export_seeds_to_jsonl(approved, output_path)
+                console.print(f"\n[green]Exported {count} approved seeds to {output_path}[/green]")
+            elif not args.output and approved:
+                console.print("[yellow]Use --output to export approved seeds[/yellow]")
+
+        # Export without review if output specified but no review
+        elif args.output:
+            output_path = Path(args.output)
+            count = export_seeds_to_jsonl(all_seeds, output_path)
+            console.print(f"\n[green]Exported {count} seeds to {output_path}[/green]")
+
 
 def main() -> None:
     """CLI entrypoint."""
@@ -479,9 +693,17 @@ def main() -> None:
 
     # seeds command
     seeds_parser = subparsers.add_parser("seeds", help="Manage seed input collection")
-    seeds_parser.add_argument("action", choices=["categories", "validate"], help="Action to perform")
+    seeds_parser.add_argument("action", choices=["categories", "validate", "collect", "review"], help="Action to perform")
     seeds_parser.add_argument("--layer", choices=["engineering", "product", "research"], help="Filter by layer")
     seeds_parser.add_argument("--url", help="URL to validate")
+    seeds_parser.add_argument("--categories", help="Comma-separated category names for collect")
+    seeds_parser.add_argument("--target", type=int, help="Target seeds per category (default: 8)")
+    seeds_parser.add_argument("--no-validate", action="store_true", help="Skip URL validation")
+    seeds_parser.add_argument("--score", action="store_true", help="Score seeds with AI quality scorer")
+    seeds_parser.add_argument("--review", action="store_true", help="Interactive review after collection")
+    seeds_parser.add_argument("--file", help="Input JSONL file for review action")
+    seeds_parser.add_argument("--approve-all", action="store_true", help="Auto-approve all seeds in review action")
+    seeds_parser.add_argument("--output", help="Output JSONL file path")
 
     args = parser.parse_args()
 

@@ -36,6 +36,41 @@ uv run python -m src.daily_digest.cli digest
 
 # View topics in archive
 uv run python -m src.daily_digest.cli topics
+
+# Collect seed URLs for eval dataset
+uv run daily-digest seeds collect --categories="agent-evaluation" --target=5 --score --review --output=seeds.jsonl
+
+# List available topic categories
+uv run daily-digest seeds categories
+
+# Validate a URL
+uv run daily-digest seeds validate --url="https://example.com/article"
+```
+
+### Seed Collection
+
+The `seeds` command builds eval datasets by collecting high-quality URLs across topic categories.
+
+```bash
+# Full workflow: collect → score → review → export
+daily-digest seeds collect \
+  --categories="agent-evaluation,procedural-memory" \
+  --target=5 \
+  --score \
+  --review \
+  --output=approved_seeds.jsonl
+```
+
+Options:
+- `--categories`: Comma-separated topic categories (default: all)
+- `--target`: Seeds per category (default: 8)
+- `--score`: AI quality scoring (1-5)
+- `--review`: Interactive approve/reject after collection
+- `--output`: Export path for JSONL
+
+Review a previously collected file:
+```bash
+daily-digest seeds review --file=raw.jsonl --output=approved.jsonl
 ```
 
 ## Structure
@@ -62,4 +97,9 @@ WORLD_VIEW.md     # Cross-session synthesis
 export ANTHROPIC_API_KEY=...
 export TAVILY_API_KEY=...
 export GITHUB_TOKEN=...  # optional
+
+# LangSmith tracing (optional)
+export LANGSMITH_API_KEY=...
+export LANGSMITH_TRACING=true  # disabled by default
+export LANGSMITH_PROJECT=daily-digest
 ```
