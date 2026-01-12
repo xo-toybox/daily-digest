@@ -19,6 +19,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "deepagents>=0.1.0",
     "langchain-tavily>=0.2.16",
+    "agentevals>=0.0.9",
 ]
 
 [project.scripts]

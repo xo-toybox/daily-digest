@@ -334,7 +334,48 @@ async def cmd_traces(args: argparse.Namespace) -> None:
 
 
 async def cmd_eval(args: argparse.Namespace) -> None:
-    """Run evaluators on expansions."""
+    """Run evaluators on expansions or LangSmith traces."""
+    # LangSmith experiment evaluation mode
+    if args.experiment:
+        from .eval.langsmith_runner import run_langsmith_eval
+
+        console.print(f"[bold]Evaluating LangSmith experiment: {args.experiment}[/bold]\n")
+
+        try:
+            results = run_langsmith_eval(
+                experiment_name=args.experiment,
+                include_trajectory=args.trajectory,
+                include_model_based=args.model_based,
+            )
+            console.print("[green]Evaluation complete![/green]")
+            console.print(f"  Evaluators run: {results['evaluators_run']}")
+            console.print("  Results: View in LangSmith dashboard")
+            console.print(f"  https://smith.langchain.com")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Recent traced runs evaluation mode
+    if args.recent:
+        from .eval.langsmith_runner import evaluate_recent_runs, format_recent_eval_results
+
+        console.print(f"[bold]Evaluating {args.limit} recent runs...[/bold]\n")
+
+        try:
+            results = evaluate_recent_runs(
+                limit=args.limit,
+                include_trajectory=args.trajectory,
+                include_model_based=args.model_based,
+            )
+            console.print(format_recent_eval_results(results))
+
+            if args.trajectory:
+                console.print("\n[dim]Trajectory evaluators ran (costs API calls).[/dim]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        return
+
+    # Local evaluation mode (original behavior)
     expansions = load_expansions(DEFAULT_EXPANDED)
     if not expansions:
         console.print("[yellow]No expansions found. Run 'daily-digest run' first.[/yellow]")
@@ -363,7 +404,7 @@ async def cmd_eval(args: argparse.Namespace) -> None:
     if args.model_based:
         console.print("[dim]Model-based evaluators ran (costs API calls).[/dim]")
     else:
-        console.print("[dim]Use --model-based to run LLM-as-judge evaluators.[/dim]")
+        console.print("[dim]Use --model-based for LLM-as-judge, --recent for traced runs, --trajectory for agent behavior.[/dim]")
 
 
 async def cmd_dataset(args: argparse.Namespace) -> None:
@@ -680,9 +721,13 @@ def main() -> None:
     traces_parser.add_argument("--limit", type=int, default=10, help="Number of traces to export (default: 10)")
 
     # eval command
-    eval_parser = subparsers.add_parser("eval", help="Run evaluators on expansions")
-    eval_parser.add_argument("--id", help="Evaluate specific expansion by ID")
+    eval_parser = subparsers.add_parser("eval", help="Run evaluators on expansions or traces")
+    eval_parser.add_argument("--id", help="Evaluate specific expansion by ID (local mode)")
     eval_parser.add_argument("--model-based", action="store_true", help="Run LLM-as-judge evaluators (costs API calls)")
+    eval_parser.add_argument("--experiment", help="LangSmith experiment name to evaluate (dashboard mode)")
+    eval_parser.add_argument("--recent", action="store_true", help="Evaluate recent traced runs")
+    eval_parser.add_argument("--limit", type=int, default=10, help="Number of recent runs to evaluate (default: 10)")
+    eval_parser.add_argument("--trajectory", action="store_true", help="Include trajectory evaluators from agentevals")
 
     # dataset command
     dataset_parser = subparsers.add_parser("dataset", help="Manage LangSmith datasets")

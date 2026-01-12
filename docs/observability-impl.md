@@ -308,6 +308,56 @@ results = evaluate(
 )
 ```
 
+### LangSmith-Native Evaluation (evaluate_existing)
+
+Run evaluators on already-traced runs without re-running the agent:
+
+```python
+from langsmith.evaluation import evaluate_existing
+from daily_digest.eval import ALL_EVALUATORS
+
+# Evaluate an existing experiment (results appear in LangSmith dashboard)
+results = evaluate_existing(
+    experiment="my-expansion-experiment",
+    evaluators=ALL_EVALUATORS,
+    load_nested=True,  # Required for trajectory evaluators
+)
+```
+
+### Trajectory Evaluators (agentevals)
+
+Three trajectory evaluators assess agent behavior (not just outputs):
+
+| Evaluator | What It Checks |
+|-----------|----------------|
+| `trajectory_tool_efficiency` | Redundant calls, unnecessary fetches, optimal ordering |
+| `trajectory_reasoning_quality` | Search strategy, source evaluation, adaptation |
+| `trajectory_goal_completion` | Whether agent accomplished the research task |
+
+```python
+from daily_digest.eval import TRAJECTORY_EVALUATORS
+
+# Include in evaluate_existing
+results = evaluate_existing(
+    experiment="my-experiment",
+    evaluators=TRAJECTORY_EVALUATORS,
+    load_nested=True,
+)
+```
+
+### CLI Commands
+
+```bash
+# Evaluate LangSmith experiment (results in dashboard)
+daily-digest eval --experiment "my-experiment" --trajectory --model-based
+
+# Evaluate recent traced runs (local output)
+daily-digest eval --recent --limit 10 --trajectory
+
+# Local evaluation from disk (original mode)
+daily-digest eval --model-based
+```
+
 ---
 
 ## Step 3: Dataset Management

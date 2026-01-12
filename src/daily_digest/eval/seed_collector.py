@@ -27,9 +27,6 @@ def _ensure_tracing_config():
         os.environ["LANGSMITH_PROJECT"] = DEFAULT_LANGSMITH_PROJECT
 
 
-_ensure_tracing_config()
-
-
 # Topic categories from topic-taxonomy.md
 TOPIC_CATEGORIES = {
     # Engineering Layer
@@ -554,6 +551,8 @@ async def collect_seeds(
     Returns:
         Dict mapping category to list of validated seed dicts
     """
+    _ensure_tracing_config()
+
     if categories is None:
         categories = list(TOPIC_CATEGORIES.keys())
 

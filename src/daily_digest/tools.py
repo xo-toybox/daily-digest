@@ -12,8 +12,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from langsmith import traceable
-
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 USER_AGENT = "daily-digest/0.1 (research agent)"
 FETCH_CACHE_DIR = Path("fetch_cache")
@@ -138,7 +136,6 @@ class FetchResult:
     content_type: str | None = None
 
 
-@traceable(run_type="tool", tags=["fetch"])
 async def fetch_url(
     url: str, timeout: float = 30.0, use_cache: bool = True, max_redirects: int = 5
 ) -> FetchResult:
@@ -250,7 +247,6 @@ class GitHubSearchResult:
     repos: list[GitHubRepo]
 
 
-@traceable(run_type="tool", tags=["github"])
 async def github_repo_info(owner: str, repo: str) -> GitHubRepo | None:
     """Get GitHub repository information."""
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -289,7 +285,6 @@ async def github_repo_info(owner: str, repo: str) -> GitHubRepo | None:
             return None
 
 
-@traceable(run_type="tool", tags=["github"])
 async def github_search_repos(query: str, limit: int = 5) -> GitHubSearchResult:
     """Search GitHub repositories."""
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -407,7 +402,6 @@ def _extract_article_content(article: dict) -> str | None:
     return "\n\n".join(lines) if lines else None
 
 
-@traceable(run_type="tool", tags=["fetch", "twitter"])
 async def fetch_tweet(url: str, use_cache: bool = True) -> TweetResult:
     """Fetch tweet content via fxtwitter API. Caches to filesystem."""
     parsed = parse_twitter_url(url)

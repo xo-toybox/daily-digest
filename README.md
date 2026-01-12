@@ -51,6 +51,27 @@ uv run daily-digest seeds validate --url="https://example.com/article"
 
 The `seeds` command builds eval datasets by collecting high-quality URLs across topic categories.
 
+```mermaid
+graph TD
+    __start__ --> collector[Seed Collector Agent]
+    collector -.-> tavily[Tavily Search]
+    tavily --> collector
+    collector -. URLs .-> validate[URL Validation]
+    validate --> score{Score?}
+    score -- yes --> llm_judge[LLM-as-Judge]
+    llm_judge --> review{Review?}
+    score -- no --> review
+    review -- yes --> human[Interactive Review]
+    human --> export[Export JSONL]
+    review -- no --> export
+    export --> __end__
+```
+
+The collector agent uses DeepAgents with Claude Sonnet 4 and Tavily search to find URLs matching topic categories. After collection:
+1. **Validation** - Dedup, domain filtering, accessibility checks
+2. **Scoring** (optional) - LLM-as-judge rates eval quality 1-5
+3. **Review** (optional) - Interactive approve/reject
+
 ```bash
 # Full workflow: collect → score → review → export
 daily-digest seeds collect \

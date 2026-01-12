@@ -39,6 +39,31 @@ from .seed_collector import (
     export_seeds_to_jsonl,
     TOPIC_CATEGORIES,
 )
+from .langsmith_evaluators import (
+    # LangSmith-compatible evaluators
+    structure_evaluator_ls,
+    efficiency_evaluator_ls,
+    sources_retrieved_evaluator_ls,
+    groundedness_evaluator_ls,
+    coverage_evaluator_ls,
+    authority_evaluator_ls,
+    topic_evaluator_ls,
+    # Trajectory evaluators
+    trajectory_tool_efficiency,
+    trajectory_reasoning_quality,
+    trajectory_goal_completion,
+    # Evaluator collections
+    CODE_EVALUATORS,
+    OUTPUT_EVALUATORS,
+    TRAJECTORY_EVALUATORS,
+    ALL_EVALUATORS,
+)
+from .langsmith_runner import (
+    run_langsmith_eval,
+    run_langsmith_eval_async,
+    evaluate_recent_runs,
+    format_recent_eval_results,
+)
 
 __all__ = [
     # Expansion evaluators
@@ -74,4 +99,24 @@ __all__ = [
     "get_category_info",
     "export_seeds_to_jsonl",
     "TOPIC_CATEGORIES",
+    # LangSmith-native evaluators
+    "structure_evaluator_ls",
+    "efficiency_evaluator_ls",
+    "sources_retrieved_evaluator_ls",
+    "groundedness_evaluator_ls",
+    "coverage_evaluator_ls",
+    "authority_evaluator_ls",
+    "topic_evaluator_ls",
+    "trajectory_tool_efficiency",
+    "trajectory_reasoning_quality",
+    "trajectory_goal_completion",
+    "CODE_EVALUATORS",
+    "OUTPUT_EVALUATORS",
+    "TRAJECTORY_EVALUATORS",
+    "ALL_EVALUATORS",
+    # LangSmith runner
+    "run_langsmith_eval",
+    "run_langsmith_eval_async",
+    "evaluate_recent_runs",
+    "format_recent_eval_results",
 ]
