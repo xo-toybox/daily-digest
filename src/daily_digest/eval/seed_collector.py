@@ -213,6 +213,9 @@ async def validate_url(url: str, existing_urls: set[str] | None = None) -> dict:
     async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
         try:
             resp = await client.head(normalized)
+            # Some sites block HEAD (403/405) but allow GET - fallback
+            if resp.status_code in (403, 405):
+                resp = await client.get(normalized)
             if resp.status_code >= 400:
                 return {
                     "valid": False,
